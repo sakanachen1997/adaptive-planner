@@ -1,0 +1,116 @@
+export const APP_ID = 'adaptive-planner';
+export const PLAN_TITLE_PREFIX = '[Plan]';
+
+export const CONTEXTS = Object.freeze({
+  ANY: 'any',
+  WORK: 'work',
+  HOME: 'home',
+  CUSTOM: 'custom'
+});
+
+export const TASK_STATUSES = Object.freeze({
+  PENDING: 'pending',
+  SCHEDULED: 'scheduled',
+  COMPLETED: 'completed',
+  SKIPPED: 'skipped'
+});
+
+export const TASK_TYPE_DEFAULTS = Object.freeze({
+  编码工作: {
+    energyDemand: 'high',
+    physicalDemand: 'low',
+    splittable: false,
+    minSegmentMinutes: 45,
+    executionContext: CONTEXTS.WORK,
+    externalCommitment: 4
+  },
+  复杂教程和学习: {
+    energyDemand: 'high',
+    physicalDemand: 'low',
+    splittable: true,
+    minSegmentMinutes: 25,
+    executionContext: CONTEXTS.ANY,
+    externalCommitment: 2
+  },
+  背单词: {
+    energyDemand: 'mediumLow',
+    physicalDemand: 'low',
+    splittable: true,
+    minSegmentMinutes: 10,
+    executionContext: CONTEXTS.ANY,
+    externalCommitment: 1
+  },
+  打游戏: {
+    energyDemand: 'low',
+    physicalDemand: 'low',
+    splittable: true,
+    minSegmentMinutes: 30,
+    executionContext: CONTEXTS.HOME,
+    externalCommitment: 0
+  },
+  运动健身: {
+    energyDemand: 'medium',
+    physicalDemand: 'high',
+    splittable: false,
+    minSegmentMinutes: 30,
+    executionContext: CONTEXTS.HOME,
+    externalCommitment: 2
+  },
+  绘画委托副业: {
+    energyDemand: 'mediumHigh',
+    physicalDemand: 'low',
+    splittable: true,
+    minSegmentMinutes: 30,
+    executionContext: CONTEXTS.HOME,
+    externalCommitment: 4
+  },
+  生活杂务: {
+    energyDemand: 'low',
+    physicalDemand: 'variable',
+    splittable: true,
+    minSegmentMinutes: 15,
+    executionContext: CONTEXTS.ANY,
+    externalCommitment: 1
+  },
+  自定义: {
+    energyDemand: 'medium',
+    physicalDemand: 'low',
+    splittable: true,
+    minSegmentMinutes: 20,
+    executionContext: CONTEXTS.ANY,
+    externalCommitment: 1
+  }
+});
+
+function generateTaskId() {
+  return globalThis.crypto?.randomUUID?.()
+    ?? `task_${Date.now()}_${Math.random().toString(16).slice(2)}`;
+}
+
+export function createTask(input) {
+  const taskType = input.taskType || '自定义';
+  const defaults = TASK_TYPE_DEFAULTS[taskType] ?? TASK_TYPE_DEFAULTS.自定义;
+
+  return {
+    taskId: input.taskId ?? generateTaskId(),
+    taskName: input.taskName.trim(),
+    taskType,
+    desiredMinutes: Number(input.desiredMinutes),
+    minimumMinutes: Number(input.minimumMinutes),
+    importance: Number(input.importance),
+    deadline: input.deadline || null,
+    executionContext: input.executionContext ?? defaults.executionContext,
+    fixed: Boolean(input.fixed),
+    fixedStart: input.fixedStart || null,
+    fixedEnd: input.fixedEnd || null,
+    energyDemand: input.energyDemand ?? defaults.energyDemand,
+    physicalDemand: input.physicalDemand ?? defaults.physicalDemand,
+    splittable: input.splittable ?? defaults.splittable,
+    minSegmentMinutes: Number(input.minSegmentMinutes ?? defaults.minSegmentMinutes),
+    externalCommitment: Number(input.externalCommitment ?? defaults.externalCommitment),
+    status: input.status ?? TASK_STATUSES.PENDING,
+    actualStart: input.actualStart ?? null,
+    actualEnd: input.actualEnd ?? null,
+    weekPlanId: input.weekPlanId ?? null
+  };
+}
