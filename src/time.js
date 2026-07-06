@@ -1,33 +1,53 @@
 const MINUTE_MS = 60_000;
 
-function formatLocalDateTime(date) {
-  const year = date.getFullYear();
-  const month = String(date.getMonth() + 1).padStart(2, '0');
-  const day = String(date.getDate()).padStart(2, '0');
-  const hours = String(date.getHours()).padStart(2, '0');
-  const minutes = String(date.getMinutes()).padStart(2, '0');
-  const seconds = String(date.getSeconds()).padStart(2, '0');
-
-  return `${year}-${month}-${day}T${hours}:${minutes}:${seconds}`;
+function padDatePart(value) {
+  return String(value).padStart(2, '0');
 }
 
-function parseLocalDateTime(value) {
+function formatLocalDateTime(date) {
+  return formatDateTimeParts(
+    date.getFullYear(),
+    date.getMonth() + 1,
+    date.getDate(),
+    date.getHours(),
+    date.getMinutes(),
+    date.getSeconds()
+  );
+}
+
+function formatDateTimeParts(year, month, day, hours, minutes, seconds) {
+  return `${year}-${padDatePart(month)}-${padDatePart(day)}T${padDatePart(hours)}:${padDatePart(minutes)}:${padDatePart(seconds)}`;
+}
+
+function formatWallClockDateTime(index) {
+  const date = new Date(index);
+  return formatDateTimeParts(
+    date.getUTCFullYear(),
+    date.getUTCMonth() + 1,
+    date.getUTCDate(),
+    date.getUTCHours(),
+    date.getUTCMinutes(),
+    date.getUTCSeconds()
+  );
+}
+
+function parseDateTimeParts(value) {
   const normalized = normalizeDateTime(value);
   const match = normalized.match(/^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})$/);
 
   if (!match) {
-    return new Date(Number.NaN);
+    return null;
   }
 
   const [, year, month, day, hours, minutes, seconds] = match;
-  return new Date(
-    Number(year),
-    Number(month) - 1,
-    Number(day),
-    Number(hours),
-    Number(minutes),
-    Number(seconds)
-  );
+  return {
+    year: Number(year),
+    monthIndex: Number(month) - 1,
+    day: Number(day),
+    hours: Number(hours),
+    minutes: Number(minutes),
+    seconds: Number(seconds)
+  };
 }
 
 function positiveInterval(interval) {
@@ -60,7 +80,19 @@ export function normalizeDateTime(value) {
 }
 
 export function toMillis(value) {
-  return parseLocalDateTime(value).getTime();
+  const parts = parseDateTimeParts(value);
+  if (!parts) {
+    return Number.NaN;
+  }
+
+  return Date.UTC(
+    parts.year,
+    parts.monthIndex,
+    parts.day,
+    parts.hours,
+    parts.minutes,
+    parts.seconds
+  );
 }
 
 export function minutesBetween(start, end) {
@@ -69,7 +101,7 @@ export function minutesBetween(start, end) {
 }
 
 export function addMinutes(start, minutes) {
-  return formatLocalDateTime(new Date(toMillis(start) + minutes * MINUTE_MS));
+  return formatWallClockDateTime(toMillis(start) + minutes * MINUTE_MS);
 }
 
 export function totalMinutes(intervals) {

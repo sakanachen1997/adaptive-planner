@@ -14,6 +14,14 @@ test('minutesBetween compares offset-aware timestamps by visible local wall-cloc
   assert.equal(time.minutesBetween('2026-07-06T09:00:00+05:00', '2026-07-06T10:00:00'), 60);
 });
 
+test('minutesBetween ignores DST start gaps for wall-clock planning', () => {
+  assert.equal(time.minutesBetween('2026-03-29T01:30:00', '2026-03-29T03:30:00'), 120);
+});
+
+test('minutesBetween ignores DST end repeats for wall-clock planning', () => {
+  assert.equal(time.minutesBetween('2026-10-25T01:30:00', '2026-10-25T03:30:00'), 120);
+});
+
 test('subtractIntervals removes protected time from available blocks and preserves context', () => {
   const available = [{
     start: '2026-07-06T09:00:00',
@@ -51,6 +59,16 @@ test('normalizeDateTime strips timezone suffixes and formats Date objects as loc
 
 test('addMinutes ignores offset suffixes and returns a local wall-clock string', () => {
   assert.equal(time.addMinutes('2026-07-06T09:00:00+02:00', 30), '2026-07-06T09:30:00');
+});
+
+test('addMinutes ignores DST start gaps for wall-clock planning', () => {
+  assert.equal(time.addMinutes('2026-03-29T01:30:00', 60), '2026-03-29T02:30:00');
+});
+
+test('addMinutes uses timezone-independent calendar rollover', () => {
+  assert.equal(time.addMinutes('2026-12-31T23:45:00', 30), '2027-01-01T00:15:00');
+  assert.equal(time.addMinutes('2026-01-31T23:45:00', 30), '2026-02-01T00:15:00');
+  assert.equal(time.addMinutes('2026-07-06T23:45:00', 30), '2026-07-07T00:15:00');
 });
 
 test('subtractIntervals normalizes offset-aware blocked boundaries in output', () => {
