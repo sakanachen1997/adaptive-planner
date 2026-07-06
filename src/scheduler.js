@@ -5,6 +5,7 @@ import {
   minutesBetween,
   normalizeDateTime,
   subtractIntervals,
+  toMillis,
   totalMinutes
 } from './time.js';
 
@@ -14,8 +15,20 @@ const CONFLICT_ACTIONS = Object.freeze([
   '删除/跳过低优先级任务后重排'
 ]);
 
+function intervalMinutes(start, end) {
+  const minutes = minutesBetween(start, end);
+  return Number.isFinite(minutes) ? minutes : 0;
+}
+
+function validDateTime(value) {
+  const normalized = normalizeDateTime(value);
+  return Number.isFinite(toMillis(normalized)) ? normalized : null;
+}
+
 function contextCompatible(task, block) {
-  return task.executionContext === CONTEXTS.ANY || task.executionContext === block.context;
+  return task.executionContext === CONTEXTS.ANY
+    || block.context === CONTEXTS.ANY
+    || task.executionContext === block.context;
 }
 
 function normalizePositiveBlocks(blocks) {
@@ -25,7 +38,7 @@ function normalizePositiveBlocks(blocks) {
       start: normalizeDateTime(block.start),
       end: normalizeDateTime(block.end)
     }))
-    .filter((block) => minutesBetween(block.start, block.end) > 0);
+    .filter((block) => intervalMinutes(block.start, block.end) > 0);
 }
 
 function futurePartOfBlocks(blocks, now) {
@@ -67,13 +80,23 @@ function fixedDateTime(planDate, time) {
 function completedSegments(tasks) {
   return tasks
     .filter((task) => task.status === TASK_STATUSES.COMPLETED)
-    .map((task) => ({
-      taskId: task.taskId,
-      taskName: task.taskName,
-      start: normalizeDateTime(task.actualStart),
-      end: normalizeDateTime(task.actualEnd),
-      status: TASK_STATUSES.COMPLETED
-    }));
+    .map((task) => {
+      const start = validDateTime(task.actualStart);
+      const end = validDateTime(task.actualEnd);
+
+      if (!start || !end || intervalMinutes(start, end) <= 0) {
+        return null;
+      }
+
+      return {
+        taskId: task.taskId,
+        taskName: task.taskName,
+        start,
+        end,
+        status: TASK_STATUSES.COMPLETED
+      };
+    })
+    .filter(Boolean);
 }
 
 function activeTasks(tasks) {
@@ -83,23 +106,92 @@ function activeTasks(tasks) {
   ));
 }
 
+function fixedElapsedMinutes(task, planDate, now) {
+  if (!task.fixed || !task.fixedStart || !task.fixedEnd) {
+    return 0;
+  }
+
+  const start = fixedDateTime(planDate, task.fixedStart);
+  const end = fixedDateTime(planDate, task.fixedEnd);
+  const current = normalizeDateTime(now);
+
+  if (current <= start) {
+    return 0;
+  }
+
+  return intervalMinutes(start, current < end ? current : end);
+}
+
+function taskWithEffectiveWork(task, planDate, now) {
+  const elapsedMinutes = fixedElapsedMinutes(task, planDate, now);
+  const effectiveMinimumMinutes = Math.max(0, task.minimumMinutes - elapsedMinutes);
+  const effectiveDesiredMinutes = Math.max(
+    effectiveMinimumMinutes,
+    Math.max(0, task.desiredMinutes - elapsedMinutes)
+  );
+
+  return {
+    ...task,
+    effectiveMinimumMinutes,
+    effectiveDesiredMinutes
+  };
+}
+
 function allocateDurations(tasks, capacityMinutes, now) {
-  const requiredMinimum = tasks.reduce((sum, task) => sum + task.minimumMinutes, 0);
+  const requiredMinimum = tasks.reduce((sum, task) => (
+    sum + task.effectiveMinimumMinutes
+  ), 0);
   const flexibleCapacity = Math.max(0, capacityMinutes - requiredMinimum);
+  const desiredExtraTotal = tasks.reduce((sum, task) => (
+    sum + Math.max(0, task.effectiveDesiredMinutes - task.effectiveMinimumMinutes)
+  ), 0);
+  const usableExtra = Math.min(flexibleCapacity, desiredExtraTotal);
   const weightedTasks = tasks.map((task) => ({
     task,
-    desiredExtra: Math.max(0, task.desiredMinutes - task.minimumMinutes),
-    weight: calculatePriority(task, now) * Math.max(1, task.desiredMinutes)
+    duration: task.effectiveMinimumMinutes,
+    desiredExtra: Math.max(0, task.effectiveDesiredMinutes - task.effectiveMinimumMinutes),
+    fraction: 0,
+    priority: calculatePriority(task, now),
+    weight: calculatePriority(task, now) * Math.max(1, task.effectiveDesiredMinutes)
   }));
   const totalWeight = weightedTasks.reduce((sum, item) => sum + item.weight, 0) || 1;
+  let distributedExtra = 0;
 
-  return new Map(weightedTasks.map(({ task, desiredExtra, weight }) => {
-    const proportionalExtra = Math.floor((weight / totalWeight) * flexibleCapacity);
-    return [
-      task.taskId,
-      task.minimumMinutes + Math.min(desiredExtra, proportionalExtra)
-    ];
-  }));
+  for (const item of weightedTasks) {
+    const exactExtra = (item.weight / totalWeight) * usableExtra;
+    const flooredExtra = Math.floor(exactExtra);
+    const extra = Math.min(item.desiredExtra, flooredExtra);
+    item.duration += extra;
+    item.fraction = exactExtra - flooredExtra;
+    distributedExtra += extra;
+  }
+
+  let leftover = usableExtra - distributedExtra;
+
+  while (leftover > 0) {
+    const underDesired = weightedTasks
+      .filter((item) => item.duration < item.task.effectiveDesiredMinutes)
+      .sort((left, right) => (
+        right.fraction - left.fraction
+          || right.priority - left.priority
+          || left.task.taskName.localeCompare(right.task.taskName)
+      ));
+
+    if (underDesired.length === 0) {
+      break;
+    }
+
+    for (const item of underDesired) {
+      if (leftover <= 0) {
+        break;
+      }
+
+      item.duration += 1;
+      leftover -= 1;
+    }
+  }
+
+  return new Map(weightedTasks.map(({ task, duration }) => [task.taskId, duration]));
 }
 
 function segmentForTask(task, start, minutes) {
@@ -113,82 +205,102 @@ function segmentForTask(task, start, minutes) {
   };
 }
 
-function placeTask(task, minutes, blocks) {
-  const compatible = blocks
+function rankedCompatibleBlocks(task, blocks) {
+  return blocks
     .map((block, index) => ({ block, index, score: scorePlacement(task, block) }))
     .filter((item) => contextCompatible(task, item.block))
     .sort((left, right) => (
       right.score - left.score
         || left.block.start.localeCompare(right.block.start)
+        || left.block.end.localeCompare(right.block.end)
     ));
+}
 
+function placeTask(task, minutes, blocks) {
   const segments = [];
   let remaining = minutes;
+  let remainingBlocks = blocks.map((block) => ({ ...block }));
 
-  for (const item of compatible) {
-    if (remaining <= 0) {
+  while (remaining > 0) {
+    if (task.splittable && segments.length > 0 && remaining < task.minSegmentMinutes) {
       break;
     }
 
-    const block = blocks[item.index];
-    const capacity = minutesBetween(block.start, block.end);
-    const minimumForBlock = task.splittable
-      ? Math.min(remaining, task.minSegmentMinutes)
-      : remaining;
+    const compatible = rankedCompatibleBlocks(task, remainingBlocks);
+    let placed = false;
 
-    if (capacity < minimumForBlock) {
-      continue;
+    for (const item of compatible) {
+      const block = remainingBlocks[item.index];
+      const capacity = intervalMinutes(block.start, block.end);
+      const minimumForSegment = task.splittable
+        ? Math.min(remaining, task.minSegmentMinutes)
+        : remaining;
+
+      if (capacity < minimumForSegment) {
+        continue;
+      }
+
+      const used = task.splittable ? Math.min(remaining, capacity) : remaining;
+
+      if (task.splittable && segments.length > 0 && used < task.minSegmentMinutes) {
+        continue;
+      }
+
+      const segment = segmentForTask(task, block.start, used);
+      segments.push(segment);
+      remaining -= used;
+      remainingBlocks = subtractIntervals(remainingBlocks, [segment]);
+      placed = true;
+      break;
     }
 
-    const used = task.splittable ? Math.min(remaining, capacity) : remaining;
-    const segment = segmentForTask(task, block.start, used);
-    segments.push(segment);
-    block.start = segment.end;
-    remaining -= used;
-
-    if (!task.splittable) {
+    if (!placed || !task.splittable) {
       break;
     }
   }
 
-  return { segments, remaining };
+  return { segments, remaining, blocks: remainingBlocks };
 }
 
-function placeFixedTask(task, allocatedMinutes, blocks, planDate, now) {
+function fixedFutureInterval(task, planDate, now) {
   if (!task.fixed || !task.fixedStart || !task.fixedEnd) {
-    return { segments: [], remaining: allocatedMinutes, blocks };
+    return null;
   }
 
   const start = fixedDateTime(planDate, task.fixedStart);
   const end = fixedDateTime(planDate, task.fixedEnd);
-  const fixedMinutes = minutesBetween(start, end);
+  const current = normalizeDateTime(now);
+  const futureStart = start < current ? current : start;
 
-  if (fixedMinutes <= 0 || end <= normalizeDateTime(now)) {
+  if (intervalMinutes(futureStart, end) <= 0) {
+    return null;
+  }
+
+  return { start: futureStart, end };
+}
+
+function placeFixedTask(task, allocatedMinutes, blocks, planDate, now) {
+  const fixedInterval = fixedFutureInterval(task, planDate, now);
+
+  if (!fixedInterval) {
     return { segments: [], remaining: allocatedMinutes, blocks };
   }
 
-  const fixedBlock = {
-    start: start < normalizeDateTime(now) ? normalizeDateTime(now) : start,
-    end,
-    context: task.executionContext
-  };
   const containingBlock = blocks.find((block) => (
-    contextCompatible(task, block)
-      && block.start <= fixedBlock.start
-      && block.end >= fixedBlock.end
+    block.start <= fixedInterval.start && block.end >= fixedInterval.end
   ));
 
   if (!containingBlock) {
     return { segments: [], remaining: allocatedMinutes, blocks };
   }
 
-  const used = minutesBetween(fixedBlock.start, fixedBlock.end);
+  const used = intervalMinutes(fixedInterval.start, fixedInterval.end);
   const segment = {
     taskId: task.taskId,
     taskName: task.taskName,
     status: TASK_STATUSES.SCHEDULED,
-    start: fixedBlock.start,
-    end: fixedBlock.end,
+    start: fixedInterval.start,
+    end: fixedInterval.end,
     allocatedMinutes: used
   };
 
@@ -214,6 +326,19 @@ function sortSegments(segments) {
   ));
 }
 
+function conflictResult(planDate, completed, availableMinutes, requiredMinimumMinutes) {
+  return {
+    status: 'conflict',
+    planDate,
+    segments: sortSegments(completed),
+    conflict: {
+      availableMinutes,
+      requiredMinimumMinutes,
+      actions: [...CONFLICT_ACTIONS]
+    }
+  };
+}
+
 export function scheduleDay({
   planDate,
   now,
@@ -222,38 +347,42 @@ export function scheduleDay({
   tasks = []
 }) {
   const completed = completedSegments(tasks);
-  const active = activeTasks(tasks);
+  const active = activeTasks(tasks).map((task) => taskWithEffectiveWork(task, planDate, now));
   const available = futurePartOfBlocks(
     subtractIntervals(availableBlocks, protectedBlocks),
     now
   );
   const availableMinutes = totalMinutes(available);
-  const requiredMinimumMinutes = active.reduce((sum, task) => sum + task.minimumMinutes, 0);
+  const requiredMinimumMinutes = active.reduce((sum, task) => (
+    sum + task.effectiveMinimumMinutes
+  ), 0);
 
   if (requiredMinimumMinutes > availableMinutes) {
-    return {
-      status: 'conflict',
-      planDate,
-      segments: sortSegments(completed),
-      conflict: {
-        availableMinutes,
-        requiredMinimumMinutes,
-        actions: [...CONFLICT_ACTIONS]
-      }
-    };
+    return conflictResult(planDate, completed, availableMinutes, requiredMinimumMinutes);
   }
 
-  const allocations = allocateDurations(active, availableMinutes, now);
+  const schedulableTasks = active.filter((task) => (
+    task.effectiveDesiredMinutes > 0 || fixedFutureInterval(task, planDate, now)
+  ));
+  const allocations = allocateDurations(schedulableTasks, availableMinutes, now);
   let blocks = available.map((block) => ({ ...block }));
-  const orderedTasks = [...active].sort(priorityDescending(now));
+  const orderedTasks = [...schedulableTasks].sort(priorityDescending(now));
   const fixedTasks = orderedTasks.filter((task) => task.fixed && task.fixedStart && task.fixedEnd);
   const flexibleTasks = orderedTasks.filter((task) => !fixedTasks.includes(task));
   const scheduled = [];
   const unscheduled = [];
 
   for (const task of fixedTasks) {
-    const allocatedMinutes = allocations.get(task.taskId) ?? task.minimumMinutes;
+    const allocatedMinutes = allocations.get(task.taskId) ?? task.effectiveMinimumMinutes;
     const result = placeFixedTask(task, allocatedMinutes, blocks, planDate, now);
+    const scheduledMinutes = result.segments.reduce((sum, segment) => (
+      sum + segment.allocatedMinutes
+    ), 0);
+
+    if (scheduledMinutes < task.effectiveMinimumMinutes) {
+      return conflictResult(planDate, completed, availableMinutes, requiredMinimumMinutes);
+    }
+
     scheduled.push(...result.segments);
     blocks = result.blocks;
 
@@ -267,9 +396,18 @@ export function scheduleDay({
   }
 
   for (const task of flexibleTasks) {
-    const allocatedMinutes = allocations.get(task.taskId) ?? task.minimumMinutes;
+    const allocatedMinutes = allocations.get(task.taskId) ?? task.effectiveMinimumMinutes;
     const result = placeTask(task, allocatedMinutes, blocks);
+    const scheduledMinutes = result.segments.reduce((sum, segment) => (
+      sum + segment.allocatedMinutes
+    ), 0);
+
+    if (scheduledMinutes < task.effectiveMinimumMinutes) {
+      return conflictResult(planDate, completed, availableMinutes, requiredMinimumMinutes);
+    }
+
     scheduled.push(...result.segments);
+    blocks = result.blocks;
 
     if (result.remaining > 0) {
       unscheduled.push({

@@ -25,6 +25,24 @@ function task(overrides) {
   });
 }
 
+function scheduledSegments(result) {
+  return result.segments.filter((segment) => segment.status === TASK_STATUSES.SCHEDULED);
+}
+
+function assertNoOverlaps(segments) {
+  const orderedSegments = [...segments].sort((left, right) => (
+    left.start.localeCompare(right.start)
+      || left.end.localeCompare(right.end)
+  ));
+
+  for (let index = 1; index < orderedSegments.length; index += 1) {
+    assert.ok(
+      orderedSegments[index - 1].end <= orderedSegments[index].start,
+      `${orderedSegments[index - 1].taskName} overlaps ${orderedSegments[index].taskName}`
+    );
+  }
+}
+
 test('detects hard minimum duration conflict', () => {
   const result = scheduleDay({
     planDate: PLAN_DATE,
@@ -57,6 +75,61 @@ test('detects hard minimum duration conflict', () => {
     '降低部分任务最小时长后重排',
     '删除/跳过低优先级任务后重排'
   ]);
+});
+
+test('does not overlap scheduled segments when available blocks overlap across contexts', () => {
+  const result = scheduleDay({
+    planDate: PLAN_DATE,
+    now: NOW,
+    availableBlocks: [
+      block('09:00', '10:00', CONTEXTS.WORK),
+      block('09:00', '10:00', CONTEXTS.ANY)
+    ],
+    protectedBlocks: [],
+    tasks: [
+      task({
+        taskName: '编码',
+        taskType: '编码工作',
+        desiredMinutes: 30,
+        minimumMinutes: 30,
+        importance: 5
+      }),
+      task({
+        taskName: '运动健身',
+        taskType: '运动健身',
+        desiredMinutes: 30,
+        minimumMinutes: 30,
+        importance: 4
+      })
+    ]
+  });
+
+  const segments = scheduledSegments(result);
+
+  assert.equal(result.status, 'ok');
+  assert.equal(segments.length, 2);
+  assertNoOverlaps(segments);
+});
+
+test('returns conflict when a task has no compatible capacity for its minimum', () => {
+  const result = scheduleDay({
+    planDate: PLAN_DATE,
+    now: NOW,
+    availableBlocks: [block('09:00', '10:00', CONTEXTS.WORK)],
+    protectedBlocks: [],
+    tasks: [
+      task({
+        taskName: '运动健身',
+        taskType: '运动健身',
+        desiredMinutes: 30,
+        minimumMinutes: 30,
+        importance: 4
+      })
+    ]
+  });
+
+  assert.equal(result.status, 'conflict');
+  assert.equal(result.conflict.requiredMinimumMinutes, 30);
 });
 
 test('protects ordinary calendar blocks', () => {
@@ -125,6 +198,139 @@ test('splits work around protected calendar blocks when full allocation requires
   assert.equal(allocatedMinutes, 90);
 });
 
+test('fixed tasks occupy their interval even when context differs from availability', () => {
+  const result = scheduleDay({
+    planDate: PLAN_DATE,
+    now: NOW,
+    availableBlocks: [block('09:00', '11:00', CONTEXTS.WORK)],
+    protectedBlocks: [],
+    tasks: [
+      task({
+        taskName: '固定运动',
+        taskType: '运动健身',
+        desiredMinutes: 30,
+        minimumMinutes: 30,
+        importance: 4,
+        fixed: true,
+        fixedStart: '09:30',
+        fixedEnd: '10:00'
+      }),
+      task({
+        taskName: '编码',
+        taskType: '编码工作',
+        desiredMinutes: 60,
+        minimumMinutes: 45,
+        importance: 5
+      })
+    ]
+  });
+
+  const codingSegments = scheduledSegments(result).filter((segment) => segment.taskName === '编码');
+
+  assert.equal(result.status, 'ok');
+  assert.ok(codingSegments.length > 0);
+  assert.ok(codingSegments.every((segment) => (
+    segment.end <= `${PLAN_DATE}T09:30:00`
+      || segment.start >= `${PLAN_DATE}T10:00:00`
+  )));
+});
+
+test('fixed task started before now schedules only remaining work without conflict', () => {
+  const fixedTask = task({
+    taskName: '固定编码',
+    taskType: '编码工作',
+    desiredMinutes: 60,
+    minimumMinutes: 60,
+    importance: 5,
+    fixed: true,
+    fixedStart: '09:00',
+    fixedEnd: '10:00'
+  });
+
+  const result = scheduleDay({
+    planDate: PLAN_DATE,
+    now: `${PLAN_DATE}T09:30:00`,
+    availableBlocks: [block('09:00', '10:00', CONTEXTS.WORK)],
+    protectedBlocks: [],
+    tasks: [fixedTask]
+  });
+
+  assert.equal(result.status, 'ok');
+  assert.deepEqual(scheduledSegments(result), [{
+    taskId: fixedTask.taskId,
+    taskName: '固定编码',
+    status: TASK_STATUSES.SCHEDULED,
+    start: `${PLAN_DATE}T09:30:00`,
+    end: `${PLAN_DATE}T10:00:00`,
+    allocatedMinutes: 30
+  }]);
+});
+
+test('redistributes rounded allocation leftovers until available desired capacity is used', () => {
+  const result = scheduleDay({
+    planDate: PLAN_DATE,
+    now: NOW,
+    availableBlocks: [block('09:00', '10:03', CONTEXTS.WORK)],
+    protectedBlocks: [],
+    tasks: [
+      task({
+        taskName: '学习一',
+        desiredMinutes: 60,
+        minimumMinutes: 30,
+        importance: 3,
+        executionContext: CONTEXTS.WORK,
+        splittable: true,
+        minSegmentMinutes: 30
+      }),
+      task({
+        taskName: '学习二',
+        desiredMinutes: 60,
+        minimumMinutes: 30,
+        importance: 3,
+        executionContext: CONTEXTS.WORK,
+        splittable: true,
+        minSegmentMinutes: 30
+      })
+    ]
+  });
+  const allocatedMinutes = scheduledSegments(result).reduce((total, segment) => (
+    total + segment.allocatedMinutes
+  ), 0);
+
+  assert.equal(result.status, 'ok');
+  assert.equal(allocatedMinutes, 63);
+});
+
+test('splittable tasks do not emit follow-up segments shorter than their minimum segment length', () => {
+  const result = scheduleDay({
+    planDate: PLAN_DATE,
+    now: NOW,
+    availableBlocks: [
+      block('09:00', '09:30', CONTEXTS.WORK),
+      block('10:00', '10:20', CONTEXTS.WORK)
+    ],
+    protectedBlocks: [],
+    tasks: [
+      task({
+        taskName: '短尾学习',
+        desiredMinutes: 50,
+        minimumMinutes: 30,
+        importance: 4,
+        executionContext: CONTEXTS.WORK,
+        splittable: true,
+        minSegmentMinutes: 30
+      })
+    ]
+  });
+  const learningSegments = scheduledSegments(result).filter((segment) => (
+    segment.taskName === '短尾学习'
+  ));
+
+  assert.equal(result.status, 'partial');
+  assert.ok(learningSegments.length > 0);
+  assert.ok(learningSegments.every((segment) => segment.allocatedMinutes >= 30));
+});
+
 test('home-only tasks are not placed in work blocks', () => {
   const result = scheduleDay({
     planDate: PLAN_DATE,
@@ -179,4 +385,28 @@ test('completed tasks are preserved and not rescheduled', () => {
     status: TASK_STATUSES.COMPLETED
   }]);
   assert.deepEqual(result.unscheduled, []);
+});
+
+test('completed tasks with invalid actual times are omitted from result segments', () => {
+  const completedTask = task({
+    taskName: '缺少实际时间',
+    taskType: '背单词',
+    desiredMinutes: 30,
+    minimumMinutes: 10,
+    importance: 3,
+    status: TASK_STATUSES.COMPLETED,
+    actualStart: null,
+    actualEnd: null
+  });
+
+  const result = scheduleDay({
+    planDate: PLAN_DATE,
+    now: `${PLAN_DATE}T09:00:00`,
+    availableBlocks: [block('09:00', '10:00')],
+    protectedBlocks: [],
+    tasks: [completedTask]
+  });
+
+  assert.equal(result.status, 'ok');
+  assert.deepEqual(result.segments, []);
 });
