@@ -15,7 +15,14 @@ export const TASK_STATUSES = Object.freeze({
   SKIPPED: 'skipped'
 });
 
-export const TASK_TYPE_DEFAULTS = Object.freeze({
+function freezeDefaults(defaults) {
+  for (const value of Object.values(defaults)) {
+    Object.freeze(value);
+  }
+  return Object.freeze(defaults);
+}
+
+export const TASK_TYPE_DEFAULTS = freezeDefaults({
   编码工作: {
     energyDemand: 'high',
     physicalDemand: 'low',
@@ -87,17 +94,58 @@ function generateTaskId() {
     ?? `task_${Date.now()}_${Math.random().toString(16).slice(2)}`;
 }
 
+function normalizeTaskType(taskType) {
+  return Object.hasOwn(TASK_TYPE_DEFAULTS, taskType) ? taskType : '自定义';
+}
+
+function finiteNumber(value, fieldName) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) {
+    throw new RangeError(`${fieldName} must be a finite number`);
+  }
+  return number;
+}
+
+function positiveNumber(value, fieldName) {
+  const number = finiteNumber(value, fieldName);
+  if (number <= 0) {
+    throw new RangeError(`${fieldName} must be greater than 0`);
+  }
+  return number;
+}
+
+function importanceNumber(value) {
+  const number = finiteNumber(value, 'importance');
+  if (number < 1 || number > 5) {
+    throw new RangeError('importance must be between 1 and 5');
+  }
+  return number;
+}
+
+function nonNegativeNumber(value, fieldName) {
+  const number = finiteNumber(value, fieldName);
+  if (number < 0) {
+    throw new RangeError(`${fieldName} must be greater than or equal to 0`);
+  }
+  return number;
+}
+
 export function createTask(input) {
-  const taskType = input.taskType || '自定义';
-  const defaults = TASK_TYPE_DEFAULTS[taskType] ?? TASK_TYPE_DEFAULTS.自定义;
+  const taskType = normalizeTaskType(input.taskType);
+  const defaults = TASK_TYPE_DEFAULTS[taskType];
+  const taskName = String(input.taskName ?? '').trim();
+
+  if (!taskName) {
+    throw new RangeError('taskName must not be blank');
+  }
 
   return {
     taskId: input.taskId ?? generateTaskId(),
-    taskName: input.taskName.trim(),
+    taskName,
     taskType,
-    desiredMinutes: Number(input.desiredMinutes),
-    minimumMinutes: Number(input.minimumMinutes),
-    importance: Number(input.importance),
+    desiredMinutes: positiveNumber(input.desiredMinutes, 'desiredMinutes'),
+    minimumMinutes: positiveNumber(input.minimumMinutes, 'minimumMinutes'),
+    importance: importanceNumber(input.importance),
     deadline: input.deadline || null,
     executionContext: input.executionContext ?? defaults.executionContext,
     fixed: Boolean(input.fixed),
@@ -106,8 +154,8 @@ export function createTask(input) {
     energyDemand: input.energyDemand ?? defaults.energyDemand,
     physicalDemand: input.physicalDemand ?? defaults.physicalDemand,
     splittable: input.splittable ?? defaults.splittable,
-    minSegmentMinutes: Number(input.minSegmentMinutes ?? defaults.minSegmentMinutes),
-    externalCommitment: Number(input.externalCommitment ?? defaults.externalCommitment),
+    minSegmentMinutes: positiveNumber(input.minSegmentMinutes ?? defaults.minSegmentMinutes, 'minSegmentMinutes'),
+    externalCommitment: nonNegativeNumber(input.externalCommitment ?? defaults.externalCommitment, 'externalCommitment'),
     status: input.status ?? TASK_STATUSES.PENDING,
     actualStart: input.actualStart ?? null,
     actualEnd: input.actualEnd ?? null,
