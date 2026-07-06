@@ -22,20 +22,61 @@ function defaultSettings() {
   };
 }
 
+function getLocalStorage() {
+  try {
+    return globalThis.localStorage ?? null;
+  } catch {
+    return null;
+  }
+}
+
+function isPlainObject(value) {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function isValidDefaultBlock(block) {
+  return isPlainObject(block)
+    && typeof block.start === 'string'
+    && typeof block.end === 'string'
+    && typeof block.context === 'string'
+    && typeof block.enabled === 'boolean';
+}
+
+function isValidSettings(settings) {
+  return isPlainObject(settings)
+    && typeof settings.clientId === 'string'
+    && typeof settings.writeBuffersToCalendar === 'boolean'
+    && Array.isArray(settings.defaultBlocks)
+    && settings.defaultBlocks.every(isValidDefaultBlock);
+}
+
 export function loadSettings() {
-  const raw = globalThis.localStorage.getItem(SETTINGS_KEY);
+  const storage = getLocalStorage();
+  if (!storage) {
+    return defaultSettings();
+  }
+
+  let raw;
+  try {
+    raw = storage.getItem(SETTINGS_KEY);
+  } catch {
+    return defaultSettings();
+  }
+
   if (!raw) {
     return defaultSettings();
   }
 
   try {
     const parsed = JSON.parse(raw);
+    if (!isValidSettings(parsed)) {
+      return defaultSettings();
+    }
+
     return {
-      ...DEFAULT_SETTINGS,
-      ...parsed,
-      defaultBlocks: Array.isArray(parsed?.defaultBlocks)
-        ? cloneBlocks(parsed.defaultBlocks)
-        : cloneBlocks(DEFAULT_SETTINGS.defaultBlocks)
+      clientId: parsed.clientId,
+      writeBuffersToCalendar: parsed.writeBuffersToCalendar,
+      defaultBlocks: cloneBlocks(parsed.defaultBlocks)
     };
   } catch {
     return defaultSettings();
@@ -43,5 +84,15 @@ export function loadSettings() {
 }
 
 export function saveSettings(settings) {
-  globalThis.localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings));
+  const storage = getLocalStorage();
+  if (!storage) {
+    return false;
+  }
+
+  try {
+    storage.setItem(SETTINGS_KEY, JSON.stringify(settings));
+    return true;
+  } catch {
+    return false;
+  }
 }

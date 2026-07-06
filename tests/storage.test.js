@@ -23,8 +23,38 @@ function installFakeLocalStorage() {
   };
 }
 
+function removeLocalStorage() {
+  Reflect.deleteProperty(globalThis, 'localStorage');
+}
+
+function installThrowingLocalStorage({ getItem, setItem }) {
+  globalThis.localStorage = {
+    getItem() {
+      if (getItem) throw new Error('getItem failed');
+      return null;
+    },
+    setItem() {
+      if (setItem) throw new Error('setItem failed');
+    },
+    removeItem() {},
+    clear() {}
+  };
+}
+
 test('loadSettings returns defaults when no settings are stored', () => {
   installFakeLocalStorage();
+
+  assert.deepEqual(loadSettings(), DEFAULT_SETTINGS);
+});
+
+test('loadSettings returns defaults when localStorage is missing', () => {
+  removeLocalStorage();
+
+  assert.deepEqual(loadSettings(), DEFAULT_SETTINGS);
+});
+
+test('loadSettings returns defaults when localStorage getItem throws', () => {
+  installThrowingLocalStorage({ getItem: true });
 
   assert.deepEqual(loadSettings(), DEFAULT_SETTINGS);
 });
@@ -34,6 +64,40 @@ test('loadSettings returns defaults when stored settings are invalid JSON', () =
   globalThis.localStorage.setItem(SETTINGS_KEY, '{bad json');
 
   assert.deepEqual(loadSettings(), DEFAULT_SETTINGS);
+});
+
+test('loadSettings returns defaults when stored settings have an invalid shape', () => {
+  installFakeLocalStorage();
+  const invalidSettings = [
+    null,
+    [],
+    'settings',
+    {
+      clientId: 123,
+      writeBuffersToCalendar: false,
+      defaultBlocks: DEFAULT_SETTINGS.defaultBlocks
+    },
+    {
+      clientId: '',
+      writeBuffersToCalendar: 'false',
+      defaultBlocks: DEFAULT_SETTINGS.defaultBlocks
+    },
+    {
+      clientId: '',
+      writeBuffersToCalendar: false,
+      defaultBlocks: [{ start: '09:00', end: '18:00', context: 'work' }]
+    },
+    {
+      clientId: '',
+      writeBuffersToCalendar: false,
+      defaultBlocks: [{ start: '09:00', end: '18:00', context: 'work', enabled: 'yes' }]
+    }
+  ];
+
+  for (const settings of invalidSettings) {
+    globalThis.localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings));
+    assert.deepEqual(loadSettings(), DEFAULT_SETTINGS);
+  }
 });
 
 test('saveSettings stores JSON that loadSettings can read back', () => {
@@ -47,10 +111,26 @@ test('saveSettings stores JSON that loadSettings can read back', () => {
     ]
   };
 
-  saveSettings(settings);
+  assert.equal(saveSettings(settings), true);
 
   assert.equal(globalThis.localStorage.getItem(SETTINGS_KEY), JSON.stringify(settings));
   assert.deepEqual(loadSettings(), settings);
+});
+
+test('saveSettings returns false and does not throw when localStorage is missing', () => {
+  removeLocalStorage();
+
+  assert.doesNotThrow(() => {
+    assert.equal(saveSettings(DEFAULT_SETTINGS), false);
+  });
+});
+
+test('saveSettings returns false and does not throw when localStorage setItem throws', () => {
+  installThrowingLocalStorage({ setItem: true });
+
+  assert.doesNotThrow(() => {
+    assert.equal(saveSettings(DEFAULT_SETTINGS), false);
+  });
 });
 
 test('loadSettings clones default blocks when returning defaults', () => {
@@ -64,4 +144,24 @@ test('loadSettings clones default blocks when returning defaults', () => {
   assert.notEqual(firstLoad.defaultBlocks, DEFAULT_SETTINGS.defaultBlocks);
   assert.notEqual(firstLoad.defaultBlocks[0], DEFAULT_SETTINGS.defaultBlocks[0]);
   assert.deepEqual(secondLoad.defaultBlocks, DEFAULT_SETTINGS.defaultBlocks);
+});
+
+test('loadSettings clones custom blocks from valid stored JSON on each load', () => {
+  installFakeLocalStorage();
+  const settings = {
+    clientId: 'client-123',
+    writeBuffersToCalendar: true,
+    defaultBlocks: [
+      { start: '08:00', end: '10:00', context: 'work', enabled: true }
+    ]
+  };
+  globalThis.localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings));
+
+  const firstLoad = loadSettings();
+  firstLoad.defaultBlocks[0].start = '00:00';
+  const secondLoad = loadSettings();
+
+  assert.notEqual(firstLoad.defaultBlocks, secondLoad.defaultBlocks);
+  assert.notEqual(firstLoad.defaultBlocks[0], secondLoad.defaultBlocks[0]);
+  assert.deepEqual(secondLoad.defaultBlocks, settings.defaultBlocks);
 });
