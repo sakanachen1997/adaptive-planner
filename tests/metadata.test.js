@@ -54,3 +54,37 @@ test('stripPlanMetadata removes plan metadata and trims human text', () => {
 
   assert.equal(stripPlanMetadata(description), 'Focus block');
 });
+
+test('extractPlanMetadata ignores marker-like invalid blocks before valid metadata', () => {
+  const metadata = {
+    schemaVersion: 1,
+    app: APP_ID,
+    taskId: 'task-123'
+  };
+  const invalidBlock = '<!-- PLAN_META\nnot json\nPLAN_META -->';
+  const description = `${invalidBlock}\n\n${buildDescription('Focus block', metadata)}`;
+
+  assert.deepEqual(extractPlanMetadata(description), metadata);
+});
+
+test('stripPlanMetadata does not remove invalid or foreign metadata from ordinary descriptions', () => {
+  const invalidDescription = 'Agenda notes\n\n<!-- PLAN_META\nnot json\nPLAN_META -->';
+  const foreignDescription = buildDescription('Other planner block', {
+    schemaVersion: 1,
+    app: 'other-planner',
+    taskId: 'task-123'
+  });
+
+  assert.equal(stripPlanMetadata(invalidDescription), invalidDescription);
+  assert.equal(stripPlanMetadata(foreignDescription), foreignDescription);
+});
+
+test('stripPlanMetadata preserves invalid and foreign blocks before removing valid metadata', () => {
+  const invalidBlock = '<!-- PLAN_META\nnot json\nPLAN_META -->';
+  const foreignBlock = '<!-- PLAN_META\n{\n  "schemaVersion": 1,\n  "app": "other-planner",\n  "taskId": "foreign-task"\n}\nPLAN_META -->';
+  const validBlock = '<!-- PLAN_META\n{\n  "schemaVersion": 1,\n  "app": "adaptive-planner",\n  "taskId": "task-123"\n}\nPLAN_META -->';
+  const description = `Agenda notes\n\n${invalidBlock}\n\n${foreignBlock}\n\n${validBlock}`;
+  const expected = `Agenda notes\n\n${invalidBlock}\n\n${foreignBlock}`;
+
+  assert.equal(stripPlanMetadata(description), expected);
+});
