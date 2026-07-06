@@ -1,7 +1,23 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { CONTEXTS, createTask } from '../src/models.js';
-import { calculatePriority, scorePlacement } from '../src/priority.js';
+import { calculatePriority, calculateUrgency, scorePlacement } from '../src/priority.js';
+
+function scoreTestTask(energyDemand) {
+  return {
+    energyDemand,
+    executionContext: CONTEXTS.WORK,
+    splittable: false
+  };
+}
+
+function scoreTestInterval(start) {
+  return {
+    start,
+    end: '2026-07-06T23:00:00',
+    context: CONTEXTS.WORK
+  };
+}
 
 test('high-importance near-deadline drawing commission outranks relaxed gaming', () => {
   const now = '2026-07-06T09:00:00';
@@ -44,4 +60,42 @@ test('placement score prefers morning work slot for high-cognitive coding work o
   };
 
   assert.ok(scorePlacement(codingWork, morningWork) > scorePlacement(codingWork, eveningHome));
+});
+
+test('placement score gives exact energy contribution for high slot and high task', () => {
+  assert.equal(scorePlacement(
+    scoreTestTask('high'),
+    scoreTestInterval('2026-07-06T09:00:00')
+  ), 25);
+});
+
+test('placement score gives exact energy contribution for medium slot and medium task', () => {
+  assert.equal(scorePlacement(
+    scoreTestTask('medium'),
+    scoreTestInterval('2026-07-06T12:00:00')
+  ), 25);
+});
+
+test('placement score gives exact energy contribution for low slot and low task', () => {
+  assert.equal(scorePlacement(
+    scoreTestTask('low'),
+    scoreTestInterval('2026-07-06T15:00:00')
+  ), 25);
+});
+
+test('placement score prefers low slot over high slot for low-energy tasks with same context', () => {
+  const lowEnergyTask = scoreTestTask('low');
+
+  assert.ok(
+    scorePlacement(lowEnergyTask, scoreTestInterval('2026-07-06T09:00:00'))
+      < scorePlacement(lowEnergyTask, scoreTestInterval('2026-07-06T15:00:00'))
+  );
+});
+
+test('urgency uses wall-clock minutes across DST start', () => {
+  assert.equal(calculateUrgency('2026-03-29T07:00:00', '2026-03-29T01:30:00'), 5);
+});
+
+test('urgency ignores offset suffixes for wall-clock bucket boundaries', () => {
+  assert.equal(calculateUrgency('2026-07-06T15:00:00', '2026-07-06T09:00:00+05:00'), 5);
 });

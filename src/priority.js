@@ -1,38 +1,29 @@
 import { CONTEXTS } from './models.js';
+import { minutesBetween, normalizeDateTime } from './time.js';
 
-const HOURS = 60 * 60 * 1000;
-
-const ENERGY_FIT = Object.freeze({
+const ENERGY_SCORE = Object.freeze({
   high: Object.freeze({
-    high: 3,
-    medium: 1,
-    low: -2
-  }),
-  mediumHigh: Object.freeze({
-    high: 2,
-    medium: 2,
-    low: -1
-  }),
-  medium: Object.freeze({
-    high: 1,
+    high: 5,
+    mediumHigh: 4,
     medium: 3,
+    mediumLow: 2,
     low: 1
   }),
-  mediumLow: Object.freeze({
-    high: 0,
-    medium: 2,
+  medium: Object.freeze({
+    high: 3,
+    mediumHigh: 4,
+    medium: 5,
+    mediumLow: 4,
     low: 3
   }),
   low: Object.freeze({
-    high: 0,
-    medium: 2,
-    low: 3
+    high: 1,
+    mediumHigh: 2,
+    medium: 3,
+    mediumLow: 5,
+    low: 5
   })
 });
-
-function timestamp(value) {
-  return value instanceof Date ? value.getTime() : new Date(value).getTime();
-}
 
 function intervalStartHour(interval) {
   if (interval.start instanceof Date) {
@@ -48,11 +39,15 @@ export function calculateUrgency(deadline, now = new Date()) {
     return 0;
   }
 
-  const remainingHours = (timestamp(deadline) - timestamp(now)) / HOURS;
+  const normalizedDeadline = normalizeDateTime(deadline);
+  const normalizedNow = normalizeDateTime(now);
 
-  if (remainingHours <= 0) {
+  if (normalizedDeadline <= normalizedNow) {
     return 6;
   }
+
+  const remainingHours = minutesBetween(normalizedNow, normalizedDeadline) / 60;
+
   if (remainingHours <= 6) {
     return 5;
   }
@@ -93,8 +88,8 @@ export function energyLevelForHour(hour) {
 }
 
 export function scorePlacement(task, interval) {
-  const energyLevel = energyLevelForHour(intervalStartHour(interval));
-  const energyFit = ENERGY_FIT[task.energyDemand]?.[energyLevel] ?? 0;
+  const slotEnergy = energyLevelForHour(intervalStartHour(interval));
+  const energyFit = ENERGY_SCORE[slotEnergy]?.[task.energyDemand] ?? 3;
   const contextFit = task.executionContext === CONTEXTS.ANY || task.executionContext === interval.context
     ? 5
     : -20;
