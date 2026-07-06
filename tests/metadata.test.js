@@ -79,6 +79,24 @@ test('stripPlanMetadata does not remove invalid or foreign metadata from ordinar
   assert.equal(stripPlanMetadata(foreignDescription), foreignDescription);
 });
 
+test('stripPlanMetadata preserves whitespace for ordinary descriptions', () => {
+  const description = '  Agenda notes\n  ';
+
+  assert.equal(stripPlanMetadata(description), description);
+});
+
+test('stripPlanMetadata preserves whitespace for invalid and foreign marker descriptions', () => {
+  const invalidDescription = '  Agenda notes\n\n<!-- PLAN_META\nnot json\nPLAN_META -->\n  ';
+  const foreignDescription = `  ${buildDescription('Other planner block', {
+    schemaVersion: 1,
+    app: 'other-planner',
+    taskId: 'task-123'
+  })}\n  `;
+
+  assert.equal(stripPlanMetadata(invalidDescription), invalidDescription);
+  assert.equal(stripPlanMetadata(foreignDescription), foreignDescription);
+});
+
 test('stripPlanMetadata preserves invalid and foreign blocks before removing valid metadata', () => {
   const invalidBlock = '<!-- PLAN_META\nnot json\nPLAN_META -->';
   const foreignBlock = '<!-- PLAN_META\n{\n  "schemaVersion": 1,\n  "app": "other-planner",\n  "taskId": "foreign-task"\n}\nPLAN_META -->';

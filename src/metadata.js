@@ -76,7 +76,7 @@ export function stripPlanMetadata(description = '') {
   const text = String(description ?? '');
   const result = findValidMetadataBlock(text);
   if (!result) {
-    return text.trim();
+    return text;
   }
 
   const { block } = result;
