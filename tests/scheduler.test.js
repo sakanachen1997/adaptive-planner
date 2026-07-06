@@ -88,6 +88,43 @@ test('protects ordinary calendar blocks', () => {
   )));
 });
 
+test('splits work around protected calendar blocks when full allocation requires both sides', () => {
+  const result = scheduleDay({
+    planDate: PLAN_DATE,
+    now: NOW,
+    availableBlocks: [block('09:00', '11:00')],
+    protectedBlocks: [{
+      start: `${PLAN_DATE}T09:45:00`,
+      end: `${PLAN_DATE}T10:15:00`,
+      summary: 'protected meeting'
+    }],
+    tasks: [
+      task({
+        taskName: '深度学习',
+        desiredMinutes: 90,
+        minimumMinutes: 30,
+        importance: 4,
+        executionContext: CONTEXTS.WORK,
+        splittable: true,
+        minSegmentMinutes: 30
+      })
+    ]
+  });
+
+  const scheduledSegments = result.segments.filter((segment) => (
+    segment.status === TASK_STATUSES.SCHEDULED
+  ));
+  const allocatedMinutes = scheduledSegments.reduce((total, segment) => (
+    total + segment.allocatedMinutes
+  ), 0);
+
+  assert.equal(result.status, 'ok');
+  assert.equal(scheduledSegments.length, 2);
+  assert.ok(scheduledSegments.some((segment) => segment.end <= `${PLAN_DATE}T09:45:00`));
+  assert.ok(scheduledSegments.some((segment) => segment.start >= `${PLAN_DATE}T10:15:00`));
+  assert.equal(allocatedMinutes, 90);
+});
+
 test('home-only tasks are not placed in work blocks', () => {
   const result = scheduleDay({
     planDate: PLAN_DATE,
