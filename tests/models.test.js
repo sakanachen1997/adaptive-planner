@@ -51,6 +51,84 @@ test('createTask throws RangeError for invalid numeric fields', () => {
   }
 });
 
+test('createTask throws RangeError when minimumMinutes exceeds desiredMinutes', () => {
+  assert.throws(() => createTask({
+    taskName: '晚间背单词',
+    taskType: '背单词',
+    desiredMinutes: 30,
+    minimumMinutes: 45,
+    importance: 3
+  }), RangeError);
+});
+
+test('createTask rejects boolean numeric input', () => {
+  const validInput = {
+    taskName: '晚间背单词',
+    taskType: '背单词',
+    desiredMinutes: 60,
+    minimumMinutes: 10,
+    importance: 3,
+    minSegmentMinutes: 10,
+    externalCommitment: 1
+  };
+
+  for (const field of ['desiredMinutes', 'minimumMinutes', 'importance', 'minSegmentMinutes', 'externalCommitment']) {
+    assert.throws(() => createTask({ ...validInput, [field]: true }), RangeError);
+  }
+});
+
+test('createTask rejects blank string numeric input', () => {
+  const validInput = {
+    taskName: '晚间背单词',
+    taskType: '背单词',
+    desiredMinutes: 60,
+    minimumMinutes: 10,
+    importance: 3,
+    minSegmentMinutes: 10,
+    externalCommitment: 1
+  };
+
+  for (const field of ['desiredMinutes', 'minimumMinutes', 'importance', 'minSegmentMinutes', 'externalCommitment']) {
+    assert.throws(() => createTask({ ...validInput, [field]: '   ' }), RangeError);
+  }
+});
+
+test('createTask rejects non-number and non-string numeric input', () => {
+  const validInput = {
+    taskName: '晚间背单词',
+    taskType: '背单词',
+    desiredMinutes: 60,
+    minimumMinutes: 10,
+    importance: 3,
+    minSegmentMinutes: 10,
+    externalCommitment: 1
+  };
+
+  for (const value of [null, undefined, [], {}]) {
+    for (const field of ['desiredMinutes', 'minimumMinutes', 'importance', 'minSegmentMinutes', 'externalCommitment']) {
+      assert.throws(() => createTask({ ...validInput, [field]: value }), RangeError);
+    }
+  }
+});
+
+test('createTask accepts non-blank numeric strings from form data', () => {
+  const task = createTask({
+    taskName: '晚间背单词',
+    taskType: '背单词',
+    desiredMinutes: '60',
+    minimumMinutes: '10',
+    importance: '3',
+    minSegmentMinutes: '15',
+    externalCommitment: '2'
+  });
+
+  assert.equal(task.desiredMinutes, 60);
+  assert.equal(task.minimumMinutes, 10);
+  assert.equal(task.importance, 3);
+  assert.equal(task.minSegmentMinutes, 15);
+  assert.equal(task.externalCommitment, 2);
+});
+
 test('createTask normalizes unknown task types to custom defaults', () => {
   const task = createTask({
     taskName: '临时任务',
@@ -86,5 +164,7 @@ test('createTask trims taskName and rejects blank taskName', () => {
 
 test('task type defaults and nested defaults are frozen', () => {
   assert.equal(Object.isFrozen(TASK_TYPE_DEFAULTS), true);
-  assert.equal(Object.isFrozen(TASK_TYPE_DEFAULTS['编码工作']), true);
+  for (const defaults of Object.values(TASK_TYPE_DEFAULTS)) {
+    assert.equal(Object.isFrozen(defaults), true);
+  }
 });

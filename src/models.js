@@ -99,6 +99,14 @@ function normalizeTaskType(taskType) {
 }
 
 function finiteNumber(value, fieldName) {
+  if (typeof value !== 'number' && typeof value !== 'string') {
+    throw new RangeError(`${fieldName} must be a number or numeric string`);
+  }
+
+  if (typeof value === 'string' && value.trim() === '') {
+    throw new RangeError(`${fieldName} must not be blank`);
+  }
+
   const number = Number(value);
   if (!Number.isFinite(number)) {
     throw new RangeError(`${fieldName} must be a finite number`);
@@ -130,6 +138,10 @@ function nonNegativeNumber(value, fieldName) {
   return number;
 }
 
+function valueOrDefault(input, fieldName, defaultValue) {
+  return Object.hasOwn(input, fieldName) ? input[fieldName] : defaultValue;
+}
+
 export function createTask(input) {
   const taskType = normalizeTaskType(input.taskType);
   const defaults = TASK_TYPE_DEFAULTS[taskType];
@@ -139,12 +151,19 @@ export function createTask(input) {
     throw new RangeError('taskName must not be blank');
   }
 
+  const desiredMinutes = positiveNumber(input.desiredMinutes, 'desiredMinutes');
+  const minimumMinutes = positiveNumber(input.minimumMinutes, 'minimumMinutes');
+
+  if (minimumMinutes > desiredMinutes) {
+    throw new RangeError('minimumMinutes must be less than or equal to desiredMinutes');
+  }
+
   return {
     taskId: input.taskId ?? generateTaskId(),
     taskName,
     taskType,
-    desiredMinutes: positiveNumber(input.desiredMinutes, 'desiredMinutes'),
-    minimumMinutes: positiveNumber(input.minimumMinutes, 'minimumMinutes'),
+    desiredMinutes,
+    minimumMinutes,
     importance: importanceNumber(input.importance),
     deadline: input.deadline || null,
     executionContext: input.executionContext ?? defaults.executionContext,
@@ -154,8 +173,8 @@ export function createTask(input) {
     energyDemand: input.energyDemand ?? defaults.energyDemand,
     physicalDemand: input.physicalDemand ?? defaults.physicalDemand,
     splittable: input.splittable ?? defaults.splittable,
-    minSegmentMinutes: positiveNumber(input.minSegmentMinutes ?? defaults.minSegmentMinutes, 'minSegmentMinutes'),
-    externalCommitment: nonNegativeNumber(input.externalCommitment ?? defaults.externalCommitment, 'externalCommitment'),
+    minSegmentMinutes: positiveNumber(valueOrDefault(input, 'minSegmentMinutes', defaults.minSegmentMinutes), 'minSegmentMinutes'),
+    externalCommitment: nonNegativeNumber(valueOrDefault(input, 'externalCommitment', defaults.externalCommitment), 'externalCommitment'),
     status: input.status ?? TASK_STATUSES.PENDING,
     actualStart: input.actualStart ?? null,
     actualEnd: input.actualEnd ?? null,
