@@ -331,6 +331,31 @@ test('splittable tasks do not emit follow-up segments shorter than their minimum
   assert.ok(learningSegments.every((segment) => segment.allocatedMinutes >= 30));
 });
 
+test('splittable tasks do not emit first segment shorter than their minimum segment length', () => {
+  const shortTask = task({
+    taskName: '短任务学习',
+    desiredMinutes: 20,
+    minimumMinutes: 20,
+    importance: 4,
+    executionContext: CONTEXTS.WORK,
+    splittable: true,
+    minSegmentMinutes: 30
+  });
+  const result = scheduleDay({
+    planDate: PLAN_DATE,
+    now: NOW,
+    availableBlocks: [block('09:00', '09:20', CONTEXTS.WORK)],
+    protectedBlocks: [],
+    tasks: [shortTask]
+  });
+  const shortTaskSegments = scheduledSegments(result).filter((segment) => (
+    segment.taskId === shortTask.taskId
+  ));
+
+  assert.equal(result.status, 'conflict');
+  assert.deepEqual(shortTaskSegments, []);
+});
+
 test('home-only tasks are not placed in work blocks', () => {
   const result = scheduleDay({
     planDate: PLAN_DATE,

@@ -222,7 +222,7 @@ function placeTask(task, minutes, blocks) {
   let remainingBlocks = blocks.map((block) => ({ ...block }));
 
   while (remaining > 0) {
-    if (task.splittable && segments.length > 0 && remaining < task.minSegmentMinutes) {
+    if (task.splittable && remaining < task.minSegmentMinutes) {
       break;
     }
 
@@ -233,7 +233,7 @@ function placeTask(task, minutes, blocks) {
       const block = remainingBlocks[item.index];
       const capacity = intervalMinutes(block.start, block.end);
       const minimumForSegment = task.splittable
-        ? Math.min(remaining, task.minSegmentMinutes)
+        ? task.minSegmentMinutes
         : remaining;
 
       if (capacity < minimumForSegment) {
@@ -242,7 +242,7 @@ function placeTask(task, minutes, blocks) {
 
       const used = task.splittable ? Math.min(remaining, capacity) : remaining;
 
-      if (task.splittable && segments.length > 0 && used < task.minSegmentMinutes) {
+      if (task.splittable && used < task.minSegmentMinutes) {
         continue;
       }
 
