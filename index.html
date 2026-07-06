@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Adaptive Planner</title>
+    <link rel="stylesheet" href="./src/styles.css" />
+    <script src="https://accounts.google.com/gsi/client" async defer></script>
+  </head>
+  <body>
+    <header class="topbar">
+      <div>
+        <h1>Adaptive Planner</h1>
+        <p>按权重、精力、日历固定行程自动重排当天计划</p>
+      </div>
+      <div class="auth-panel">
+        <input id="clientIdInput" type="text" aria-label="Google OAuth Client ID" />
+        <button id="saveClientIdButton" type="button">保存 Client ID</button>
+        <button id="connectButton" type="button">连接 Google Calendar</button>
+      </div>
+    </header>
+
+    <main class="layout">
+      <section class="panel">
+        <h2>日期与可用时间</h2>
+        <label>计划日期 <input id="planDateInput" type="date" /></label>
+        <div class="row">
+          <button id="loadCalendarButton" type="button">读取日历</button>
+          <button id="addDefaultBlocksButton" type="button">生成默认时间块</button>
+          <button id="rescheduleButton" type="button">重新计算</button>
+        </div>
+        <div id="availableBlocks"></div>
+        <button id="addBlockButton" type="button">添加可用时间块</button>
+      </section>
+
+      <section class="panel">
+        <h2>添加任务</h2>
+        <form id="taskForm" class="form-grid">
+          <input name="taskName" required aria-label="任务名" />
+          <select name="taskType" aria-label="任务类型"></select>
+          <input name="desiredMinutes" required type="number" min="1" aria-label="想要时长 min" />
+          <input name="minimumMinutes" required type="number" min="1" aria-label="最小时长 min" />
+          <input name="importance" required type="number" min="1" max="5" value="3" aria-label="重要性" />
+          <input name="deadline" type="datetime-local" aria-label="截止时间" />
+          <select name="executionContext" aria-label="执行场景"></select>
+          <label class="checkbox"><input name="fixed" type="checkbox" /> 固定时间</label>
+          <input name="fixedStart" type="time" aria-label="固定开始时间" />
+          <input name="fixedEnd" type="time" aria-label="固定结束时间" />
+          <button type="submit">添加任务</button>
+        </form>
+      </section>
+
+      <section class="panel wide">
+        <h2>当天计划</h2>
+        <div id="conflictPanel" class="hidden"></div>
+        <div id="scheduleList"></div>
+        <h3>同步预览</h3>
+        <div id="syncPreview"></div>
+        <button id="syncButton" type="button">写入 Google Calendar</button>
+      </section>
+    </main>
+
+    <script type="module" src="./src/main.js"></script>
+  </body>
+</html>
