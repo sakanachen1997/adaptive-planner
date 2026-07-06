@@ -92,6 +92,34 @@ test('placement score prefers low slot over high slot for low-energy tasks with 
   );
 });
 
+test('placement score covers every required slot energy and task energy matrix cell', () => {
+  const cases = [
+    { slotEnergy: 'high', start: '2026-07-06T09:00:00', taskEnergy: 'high', energyScore: 5 },
+    { slotEnergy: 'high', start: '2026-07-06T09:00:00', taskEnergy: 'mediumHigh', energyScore: 4 },
+    { slotEnergy: 'high', start: '2026-07-06T09:00:00', taskEnergy: 'medium', energyScore: 3 },
+    { slotEnergy: 'high', start: '2026-07-06T09:00:00', taskEnergy: 'mediumLow', energyScore: 2 },
+    { slotEnergy: 'high', start: '2026-07-06T09:00:00', taskEnergy: 'low', energyScore: 1 },
+    { slotEnergy: 'medium', start: '2026-07-06T12:30:00', taskEnergy: 'high', energyScore: 3 },
+    { slotEnergy: 'medium', start: '2026-07-06T12:30:00', taskEnergy: 'mediumHigh', energyScore: 4 },
+    { slotEnergy: 'medium', start: '2026-07-06T12:30:00', taskEnergy: 'medium', energyScore: 5 },
+    { slotEnergy: 'medium', start: '2026-07-06T12:30:00', taskEnergy: 'mediumLow', energyScore: 4 },
+    { slotEnergy: 'medium', start: '2026-07-06T12:30:00', taskEnergy: 'low', energyScore: 3 },
+    { slotEnergy: 'low', start: '2026-07-06T15:00:00', taskEnergy: 'high', energyScore: 1 },
+    { slotEnergy: 'low', start: '2026-07-06T15:00:00', taskEnergy: 'mediumHigh', energyScore: 2 },
+    { slotEnergy: 'low', start: '2026-07-06T15:00:00', taskEnergy: 'medium', energyScore: 3 },
+    { slotEnergy: 'low', start: '2026-07-06T15:00:00', taskEnergy: 'mediumLow', energyScore: 5 },
+    { slotEnergy: 'low', start: '2026-07-06T15:00:00', taskEnergy: 'low', energyScore: 5 }
+  ];
+
+  for (const { slotEnergy, start, taskEnergy, energyScore } of cases) {
+    assert.equal(
+      scorePlacement(scoreTestTask(taskEnergy), scoreTestInterval(start)),
+      energyScore * 4 + 5,
+      `${slotEnergy} slot with ${taskEnergy} task`
+    );
+  }
+});
+
 test('urgency uses wall-clock minutes across DST start', () => {
   assert.equal(calculateUrgency('2026-03-29T07:00:00', '2026-03-29T01:30:00'), 5);
 });
