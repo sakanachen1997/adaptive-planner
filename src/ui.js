@@ -136,9 +136,11 @@ export function calendarEventToPlanTask(event) {
   };
 }
 
-function metadataForSegment(segment, task, planDate) {
-  const segmentId = `${segment.taskId}_${segment.start}_${segment.end}`;
+function segmentIdFor(segment) {
+  return `${segment.taskId}_${segment.start}_${segment.end}`;
+}
 
+function metadataForSegment(segment, task, planDate) {
   return {
     ...(task ?? {}),
     schemaVersion: 1,
@@ -146,12 +148,47 @@ function metadataForSegment(segment, task, planDate) {
     planDate,
     taskId: segment.taskId,
     taskName: segment.taskName,
-    segmentId,
+    segmentId: segmentIdFor(segment),
     status: TASK_STATUSES.SCHEDULED
   };
 }
 
-export function buildSyncOperations({ schedule, tasks, planDate }) {
+function countScheduledSegmentsByTask(segments) {
+  const counts = new Map();
+
+  for (const segment of segments) {
+    counts.set(segment.taskId, (counts.get(segment.taskId) ?? 0) + 1);
+  }
+
+  return counts;
+}
+
+function existingPlanTasksFrom({ existingPlanTasks = [], planEvents = [] }) {
+  return [
+    ...existingPlanTasks,
+    ...planEvents.map(calendarEventToPlanTask).filter(Boolean)
+  ];
+}
+
+function segmentEventIdMap(existingPlanTasks) {
+  const ids = new Map();
+
+  for (const task of existingPlanTasks) {
+    if (task.segmentId && task.calendarEventId) {
+      ids.set(task.segmentId, task.calendarEventId);
+    }
+  }
+
+  return ids;
+}
+
+export function buildSyncOperations({
+  schedule,
+  tasks,
+  planDate,
+  existingPlanTasks = [],
+  planEvents = []
+}) {
   const result = {
     creates: [],
     updates: []
@@ -161,14 +198,16 @@ export function buildSyncOperations({ schedule, tasks, planDate }) {
     return result;
   }
 
+  const scheduledSegments = (schedule.segments ?? [])
+    .filter((segment) => segment.status === TASK_STATUSES.SCHEDULED);
   const tasksById = new Map(tasks.map((task) => [task.taskId, task]));
-  const usedEventIds = new Set();
+  const scheduledCountsByTask = countScheduledSegmentsByTask(scheduledSegments);
+  const existingBySegmentId = segmentEventIdMap(existingPlanTasksFrom({
+    existingPlanTasks,
+    planEvents
+  }));
 
-  for (const segment of schedule.segments ?? []) {
-    if (segment.status === TASK_STATUSES.COMPLETED) {
-      continue;
-    }
-
+  for (const segment of scheduledSegments) {
     const task = tasksById.get(segment.taskId) ?? {
       taskId: segment.taskId,
       taskName: segment.taskName
@@ -180,12 +219,17 @@ export function buildSyncOperations({ schedule, tasks, planDate }) {
       task,
       description
     };
+    const eventId = existingBySegmentId.get(metadata.segmentId)
+      ?? (
+        scheduledCountsByTask.get(segment.taskId) === 1
+          ? task.calendarEventId
+          : null
+      );
 
-    if (task.calendarEventId && !usedEventIds.has(task.calendarEventId)) {
-      usedEventIds.add(task.calendarEventId);
+    if (eventId) {
       result.updates.push({
         ...operation,
-        eventId: task.calendarEventId
+        eventId
       });
     } else {
       result.creates.push(operation);
@@ -455,6 +499,7 @@ function renderSyncPreview() {
   state.lastSyncOperations = buildSyncOperations({
     schedule: state.schedule,
     tasks: allTasks(),
+    existingPlanTasks: planTasksFromCalendar(),
     planDate: state.planDate
   });
 
@@ -530,6 +575,7 @@ async function syncSchedule() {
   const operations = buildSyncOperations({
     schedule: state.schedule,
     tasks: allTasks(),
+    existingPlanTasks: planTasksFromCalendar(),
     planDate: state.planDate
   });
 

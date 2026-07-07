@@ -94,3 +94,93 @@ test('sync operations create or update only scheduled non-completed plan segment
   assert.equal(operations.updates[0].eventId, 'event-2');
   assert.match(operations.updates[0].description, /PLAN_META/);
 });
+
+test('sync operations ignore skipped and pending segments', () => {
+  const schedule = {
+    status: 'ok',
+    segments: [
+      {
+        taskId: 'scheduled-task',
+        taskName: 'Scheduled task',
+        status: TASK_STATUSES.SCHEDULED,
+        start: '2026-07-06T09:00:00',
+        end: '2026-07-06T09:30:00'
+      },
+      {
+        taskId: 'pending-task',
+        taskName: 'Pending task',
+        status: TASK_STATUSES.PENDING,
+        start: '2026-07-06T10:00:00',
+        end: '2026-07-06T10:30:00'
+      },
+      {
+        taskId: 'skipped-task',
+        taskName: 'Skipped task',
+        status: TASK_STATUSES.SKIPPED,
+        start: '2026-07-06T11:00:00',
+        end: '2026-07-06T11:30:00'
+      }
+    ]
+  };
+
+  const operations = buildSyncOperations({
+    schedule,
+    tasks: [
+      { taskId: 'scheduled-task', taskName: 'Scheduled task' },
+      { taskId: 'pending-task', taskName: 'Pending task', calendarEventId: 'pending-event' },
+      { taskId: 'skipped-task', taskName: 'Skipped task', calendarEventId: 'skipped-event' }
+    ],
+    planDate: '2026-07-06'
+  });
+
+  assert.deepEqual(operations.creates.map((operation) => operation.segment.taskId), ['scheduled-task']);
+  assert.deepEqual(operations.updates, []);
+});
+
+test('sync operations update split existing segments by segment id for the same task', () => {
+  const task = {
+    taskId: 'split-task',
+    taskName: 'Split task'
+  };
+  const firstSegment = {
+    taskId: 'split-task',
+    taskName: 'Split task',
+    status: TASK_STATUSES.SCHEDULED,
+    start: '2026-07-06T09:00:00',
+    end: '2026-07-06T09:30:00'
+  };
+  const secondSegment = {
+    taskId: 'split-task',
+    taskName: 'Split task',
+    status: TASK_STATUSES.SCHEDULED,
+    start: '2026-07-06T15:00:00',
+    end: '2026-07-06T15:30:00'
+  };
+
+  const operations = buildSyncOperations({
+    schedule: {
+      status: 'ok',
+      segments: [firstSegment, secondSegment]
+    },
+    tasks: [task],
+    existingPlanTasks: [
+      {
+        ...task,
+        segmentId: 'split-task_2026-07-06T09:00:00_2026-07-06T09:30:00',
+        calendarEventId: 'event-morning'
+      },
+      {
+        ...task,
+        segmentId: 'split-task_2026-07-06T15:00:00_2026-07-06T15:30:00',
+        calendarEventId: 'event-afternoon'
+      }
+    ],
+    planDate: '2026-07-06'
+  });
+
+  assert.deepEqual(operations.creates, []);
+  assert.deepEqual(
+    operations.updates.map((operation) => operation.eventId),
+    ['event-morning', 'event-afternoon']
+  );
+});
