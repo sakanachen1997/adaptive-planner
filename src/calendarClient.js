@@ -5,6 +5,7 @@ const TOKEN_EXPIRY_SAFETY_SECONDS = 60;
 
 let accessToken = '';
 let accessTokenExpiresAt = 0;
+let authGeneration = 0;
 let lastAuthError = null;
 let tokenClient = null;
 
@@ -35,6 +36,7 @@ function getOAuth2() {
 }
 
 function clearAuthState() {
+  authGeneration += 1;
   clearAccessToken();
   lastAuthError = null;
   tokenClient = null;
@@ -88,10 +90,16 @@ export function initGoogleAuth(clientId, onToken) {
     throw new Error('Google identity services are unavailable');
   }
 
+  const tokenClientGeneration = authGeneration;
+
   tokenClient = oauth2.initTokenClient({
     client_id: clientId,
     scope: CALENDAR_SCOPE,
     callback(response) {
+      if (tokenClientGeneration !== authGeneration) {
+        return;
+      }
+
       if (response?.error) {
         recordAuthError(response.error);
         if (typeof onToken === 'function') {
@@ -106,6 +114,10 @@ export function initGoogleAuth(clientId, onToken) {
       }
     },
     error_callback(error) {
+      if (tokenClientGeneration !== authGeneration) {
+        return;
+      }
+
       const message = authErrorMessage(error);
       recordAuthError(message);
       if (typeof onToken === 'function') {

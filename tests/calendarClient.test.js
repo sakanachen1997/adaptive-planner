@@ -248,6 +248,42 @@ test('initGoogleAuth with unavailable GIS clears previous token and token client
   assert.throws(() => requestAccessToken(), /not initialized/i);
 });
 
+test('stale token client success callback after failed reinit does not restore access token', () => {
+  const googleState = installFakeGoogle();
+  initGoogleAuth('client-1', () => {});
+  const oldTokenConfig = googleState.tokenConfig;
+
+  assert.throws(() => initGoogleAuth('', () => {}), /client id/i);
+
+  oldTokenConfig.callback({ access_token: 'stale', expires_in: 3600 });
+
+  assert.equal(hasAccessToken(), false);
+});
+
+test('stale token client error callback after failed reinit does not record auth error', () => {
+  const googleState = installFakeGoogle();
+  initGoogleAuth('client-1', () => {});
+  const oldTokenConfig = googleState.tokenConfig;
+
+  assert.throws(() => initGoogleAuth('', () => {}), /client id/i);
+
+  oldTokenConfig.callback({ error: 'stale_error' });
+
+  assert.equal(getLastAuthError(), null);
+});
+
+test('stale GIS error_callback after successful reinit does not record auth error', () => {
+  const googleState = installFakeGoogle();
+  initGoogleAuth('client-1', () => {});
+  const oldTokenConfig = googleState.tokenConfig;
+
+  initGoogleAuth('client-2', () => {});
+
+  oldTokenConfig.error_callback({ type: 'popup_closed' });
+
+  assert.equal(getLastAuthError(), null);
+});
+
 test('revokeAccessToken revokes and clears the current access token', () => {
   const googleState = authorize('token-to-revoke');
 
