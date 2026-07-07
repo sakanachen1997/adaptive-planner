@@ -65,6 +65,16 @@ p {
   gap: 8px;
 }
 
+.field {
+  display: grid;
+  gap: 4px;
+}
+
+.field span {
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+
 input,
 select,
 button,

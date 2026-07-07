@@ -36,16 +36,43 @@
       <section class="panel">
         <h2>添加任务</h2>
         <form id="taskForm" class="form-grid">
-          <input name="taskName" required aria-label="任务名" />
-          <select name="taskType" aria-label="任务类型"></select>
-          <input name="desiredMinutes" required type="number" min="1" aria-label="想要时长 min" />
-          <input name="minimumMinutes" required type="number" min="1" aria-label="最小时长 min" />
-          <input name="importance" required type="number" min="1" max="5" value="3" aria-label="重要性" />
-          <input name="deadline" type="datetime-local" aria-label="截止时间" />
-          <select name="executionContext" aria-label="执行场景"></select>
+          <label class="field">
+            <span>任务名</span>
+            <input name="taskName" required />
+          </label>
+          <label class="field">
+            <span>任务类型</span>
+            <select name="taskType"></select>
+          </label>
+          <label class="field">
+            <span>想要时长</span>
+            <input name="desiredMinutes" required type="number" min="1" />
+          </label>
+          <label class="field">
+            <span>最小时长</span>
+            <input name="minimumMinutes" required type="number" min="1" />
+          </label>
+          <label class="field">
+            <span>重要性</span>
+            <input name="importance" required type="number" min="1" max="5" value="3" />
+          </label>
+          <label class="field">
+            <span>截止时间</span>
+            <input name="deadline" type="datetime-local" />
+          </label>
+          <label class="field">
+            <span>执行场景</span>
+            <select name="executionContext"></select>
+          </label>
           <label class="checkbox"><input name="fixed" type="checkbox" /> 固定时间</label>
-          <input name="fixedStart" type="time" aria-label="固定开始时间" />
-          <input name="fixedEnd" type="time" aria-label="固定结束时间" />
+          <label class="field">
+            <span>固定开始时间</span>
+            <input name="fixedStart" type="time" />
+          </label>
+          <label class="field">
+            <span>固定结束时间</span>
+            <input name="fixedEnd" type="time" />
+          </label>
           <button type="submit">添加任务</button>
         </form>
       </section>
