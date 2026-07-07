@@ -267,6 +267,80 @@ function markUsed(usedEventIds, eventId) {
   }
 }
 
+function taskCandidatesByTaskId(tasks) {
+  const candidates = new Map();
+
+  for (const task of tasks) {
+    const matches = candidates.get(task.taskId) ?? [];
+    matches.push(task);
+    candidates.set(task.taskId, matches);
+  }
+
+  return candidates;
+}
+
+function sameDateTime(left, right) {
+  return Boolean(left && right) && normalizeDateTime(left) === normalizeDateTime(right);
+}
+
+function sameTime(left, right) {
+  return Boolean(left && right) && String(left).slice(0, 5) === String(right).slice(0, 5);
+}
+
+function taskMatchesSegmentTime(task, segment) {
+  if (
+    sameDateTime(task.plannedStart, segment.start)
+      && sameDateTime(task.plannedEnd, segment.end)
+  ) {
+    return true;
+  }
+
+  if (
+    sameDateTime(task.actualStart, segment.start)
+      && sameDateTime(task.actualEnd, segment.end)
+  ) {
+    return true;
+  }
+
+  return sameTime(task.fixedStart, segment.start.slice(11, 16))
+    && sameTime(task.fixedEnd, segment.end.slice(11, 16));
+}
+
+function findTaskForSegment(segment, candidatesByTaskId, {
+  segmentId = null,
+  calendarEventId = null,
+  allowTaskIdFallback = true
+} = {}) {
+  const candidates = candidatesByTaskId.get(segment.taskId) ?? [];
+  const identitySegmentId = segmentId ?? segment.segmentId ?? null;
+  const identityEventId = calendarEventId ?? segment.calendarEventId ?? null;
+
+  if (identitySegmentId) {
+    const match = candidates.find((task) => task.segmentId === identitySegmentId);
+    if (match) {
+      return match;
+    }
+  }
+
+  if (identityEventId) {
+    const match = candidates.find((task) => task.calendarEventId === identityEventId);
+    if (match) {
+      return match;
+    }
+  }
+
+  const timeMatches = candidates.filter((task) => taskMatchesSegmentTime(task, segment));
+  if (timeMatches.length === 1) {
+    return timeMatches[0];
+  }
+
+  if (allowTaskIdFallback && candidates.length === 1) {
+    return candidates[0];
+  }
+
+  return null;
+}
+
 export function mergePlanTasks({ calendarTasks = [], localTasks = [] }) {
   const merged = [];
   const calendarTaskIds = new Set();
@@ -333,7 +407,7 @@ export function buildSyncOperations({
     .filter((segment) => segment.status === TASK_STATUSES.SCHEDULED);
   const completedSegments = (schedule.segments ?? [])
     .filter((segment) => segment.status === TASK_STATUSES.COMPLETED);
-  const tasksById = new Map(tasks.map((task) => [task.taskId, task]));
+  const candidatesByTaskId = taskCandidatesByTaskId(tasks);
   const scheduledSegmentIndexes = indexesForScheduledSegments(scheduledSegments);
   const scheduledCountsByTask = countsForSegmentsByTask(scheduledSegments);
   const allExistingPlanTasks = existingPlanTasksFrom({
@@ -344,7 +418,7 @@ export function buildSyncOperations({
   const usedEventIds = new Set();
 
   for (const segment of completedSegments) {
-    const task = tasksById.get(segment.taskId);
+    const task = findTaskForSegment(segment, candidatesByTaskId);
 
     if (!task?.calendarEventId) {
       continue;
@@ -359,8 +433,13 @@ export function buildSyncOperations({
       actualStart: task.actualStart ?? segment.start,
       actualEnd: task.actualEnd ?? segment.end
     };
+    const completionSegment = {
+      ...segment,
+      start: completionTask.actualStart,
+      end: completionTask.actualEnd
+    };
     const metadata = metadataForSegment(
-      segment,
+      completionSegment,
       completionTask,
       planDate,
       segmentId,
@@ -369,7 +448,7 @@ export function buildSyncOperations({
     const description = buildDescription('由 Adaptive Planner 创建。', metadata);
 
     result.updates.push({
-      segment,
+      segment: completionSegment,
       task: completionTask,
       description,
       eventId: task.calendarEventId
@@ -378,12 +457,14 @@ export function buildSyncOperations({
   }
 
   for (const segment of scheduledSegments) {
-    const task = tasksById.get(segment.taskId) ?? {
+    const task = findTaskForSegment(segment, candidatesByTaskId) ?? {
       taskId: segment.taskId,
       taskName: segment.taskName
     };
     const segmentIndex = scheduledSegmentIndexes.get(segment) ?? 0;
-    const segmentId = stableSegmentId(segment.taskId, segmentIndex);
+    const segmentId = segment.segmentId
+      ?? task.segmentId
+      ?? stableSegmentId(segment.taskId, segmentIndex);
     const legacySegmentId = legacySegmentIdFor(segment);
     const exactExisting = bySegmentId.get(segmentId)
       ?? bySegmentId.get(legacySegmentId);
@@ -606,6 +687,8 @@ function renderConflictPanel() {
 
 function renderSchedule() {
   const root = element('scheduleList');
+  const currentTasks = allTasks();
+  const candidatesByTaskId = taskCandidatesByTaskId(currentTasks);
 
   renderConflictPanel();
 
@@ -628,6 +711,7 @@ function renderSchedule() {
   for (const segment of state.schedule.segments ?? []) {
     const item = document.createElement('div');
     item.className = `schedule-item ${segment.status === TASK_STATUSES.COMPLETED ? 'completed' : ''}`;
+    const matchedTask = findTaskForSegment(segment, candidatesByTaskId);
 
     appendText(item, segment.taskName, 'strong');
     appendText(
@@ -643,6 +727,13 @@ function renderSchedule() {
       button.textContent = '完成';
       button.dataset.completeTaskId = segment.taskId;
       button.dataset.segmentStart = segment.start;
+      button.dataset.segmentEnd = segment.end;
+      if (matchedTask?.segmentId) {
+        button.dataset.segmentId = matchedTask.segmentId;
+      }
+      if (matchedTask?.calendarEventId) {
+        button.dataset.calendarEventId = matchedTask.calendarEventId;
+      }
       item.append(button);
     }
 
@@ -819,21 +910,45 @@ function addTaskFromForm(event) {
   }
 }
 
-function completeTask(taskId, segmentStart) {
-  const existing = allTasks().find((task) => task.taskId === taskId);
+function completeTask(taskId, segmentStart, {
+  segmentEnd = null,
+  segmentId = null,
+  calendarEventId = null
+} = {}) {
+  const currentTasks = allTasks();
+  const existing = findTaskForSegment(
+    {
+      taskId,
+      start: segmentStart,
+      end: segmentEnd ?? segmentStart,
+      status: TASK_STATUSES.SCHEDULED,
+      segmentId,
+      calendarEventId
+    },
+    taskCandidatesByTaskId(currentTasks),
+    { segmentId, calendarEventId }
+  ) ?? currentTasks.find((task) => task.taskId === taskId);
 
   if (!existing) {
     showMessage('找不到要完成的任务。', true);
     return;
   }
 
-  let localTask = state.tasks.find((task) => task.taskId === taskId);
+  let localTask = state.tasks.find((task) => (
+    calendarEventId
+      ? task.calendarEventId === calendarEventId
+      : segmentId
+        ? task.segmentId === segmentId
+        : task.taskId === taskId && !task.calendarEventId && !task.segmentId
+  ));
 
   if (!localTask) {
     localTask = { ...existing };
     state.tasks.push(localTask);
   }
 
+  localTask.calendarEventId = existing.calendarEventId ?? calendarEventId ?? localTask.calendarEventId ?? null;
+  localTask.segmentId = existing.segmentId ?? segmentId ?? localTask.segmentId ?? null;
   localTask.status = TASK_STATUSES.COMPLETED;
   localTask.actualStart = segmentStart;
   localTask.actualEnd = localNowString();
@@ -886,7 +1001,11 @@ function handleScheduleClick(event) {
     return;
   }
 
-  completeTask(taskId, event.target.dataset.segmentStart);
+  completeTask(taskId, event.target.dataset.segmentStart, {
+    segmentEnd: event.target.dataset.segmentEnd || null,
+    segmentId: event.target.dataset.segmentId || null,
+    calendarEventId: event.target.dataset.calendarEventId || null
+  });
 }
 
 function wireEvents() {

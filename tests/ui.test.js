@@ -554,3 +554,92 @@ test('sync operations ignore existing Plan tasks from a different plan date', ()
   assert.equal(operations.creates.length, 1);
   assert.equal(operations.creates[0].segment.taskId, 'today-task');
 });
+
+test('sync operations update completed split segment by segment identity', () => {
+  const operations = buildSyncOperations({
+    schedule: {
+      status: 'ok',
+      segments: [
+        {
+          taskId: 'split-complete',
+          taskName: 'Split complete',
+          status: TASK_STATUSES.COMPLETED,
+          segmentId: 'split-complete_segment_1',
+          start: '2026-07-07T09:00:00',
+          end: '2026-07-07T09:25:00'
+        },
+        {
+          taskId: 'split-complete',
+          taskName: 'Split complete',
+          status: TASK_STATUSES.SCHEDULED,
+          segmentId: 'split-complete_segment_2',
+          start: '2026-07-07T15:00:00',
+          end: '2026-07-07T15:30:00'
+        }
+      ]
+    },
+    tasks: [
+      {
+        taskId: 'split-complete',
+        taskName: 'Split complete',
+        status: TASK_STATUSES.COMPLETED,
+        segmentId: 'split-complete_segment_1',
+        calendarEventId: 'event-a',
+        actualStart: '2026-07-07T09:00:00',
+        actualEnd: '2026-07-07T09:25:00'
+      },
+      {
+        taskId: 'split-complete',
+        taskName: 'Split complete',
+        status: TASK_STATUSES.SCHEDULED,
+        segmentId: 'split-complete_segment_2',
+        calendarEventId: 'event-b',
+        plannedStart: '2026-07-07T15:00:00',
+        plannedEnd: '2026-07-07T15:30:00'
+      }
+    ],
+    existingPlanTasks: [
+      {
+        taskId: 'split-complete',
+        taskName: 'Split complete',
+        status: TASK_STATUSES.SCHEDULED,
+        planDate: '2026-07-07',
+        segmentId: 'split-complete_segment_1',
+        calendarEventId: 'event-a',
+        plannedStart: '2026-07-07T09:00:00'
+      },
+      {
+        taskId: 'split-complete',
+        taskName: 'Split complete',
+        status: TASK_STATUSES.SCHEDULED,
+        planDate: '2026-07-07',
+        segmentId: 'split-complete_segment_2',
+        calendarEventId: 'event-b',
+        plannedStart: '2026-07-07T15:00:00'
+      }
+    ],
+    planDate: '2026-07-07'
+  });
+
+  assert.deepEqual(operations.creates, []);
+  assert.deepEqual(operations.deletes, []);
+  assert.deepEqual(
+    operations.updates.map((operation) => ({
+      eventId: operation.eventId,
+      status: extractPlanMetadata(operation.description).status,
+      segmentId: extractPlanMetadata(operation.description).segmentId
+    })),
+    [
+      {
+        eventId: 'event-a',
+        status: TASK_STATUSES.COMPLETED,
+        segmentId: 'split-complete_segment_1'
+      },
+      {
+        eventId: 'event-b',
+        status: TASK_STATUSES.SCHEDULED,
+        segmentId: 'split-complete_segment_2'
+      }
+    ]
+  );
+});
