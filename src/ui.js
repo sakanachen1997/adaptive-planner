@@ -341,6 +341,27 @@ function findTaskForSegment(segment, candidatesByTaskId, {
   return null;
 }
 
+export function selectTaskForCompletion(tasks, {
+  taskId,
+  segmentStart,
+  segmentEnd = null,
+  segmentId = null,
+  calendarEventId = null
+}) {
+  return findTaskForSegment(
+    {
+      taskId,
+      start: segmentStart,
+      end: segmentEnd ?? segmentStart,
+      status: TASK_STATUSES.SCHEDULED,
+      segmentId,
+      calendarEventId
+    },
+    taskCandidatesByTaskId(tasks),
+    { segmentId, calendarEventId }
+  );
+}
+
 export function mergePlanTasks({ calendarTasks = [], localTasks = [] }) {
   const merged = [];
   const calendarTaskIds = new Set();
@@ -916,22 +937,17 @@ function completeTask(taskId, segmentStart, {
   calendarEventId = null
 } = {}) {
   const currentTasks = allTasks();
-  const existing = findTaskForSegment(
-    {
-      taskId,
-      start: segmentStart,
-      end: segmentEnd ?? segmentStart,
-      status: TASK_STATUSES.SCHEDULED,
-      segmentId,
-      calendarEventId
-    },
-    taskCandidatesByTaskId(currentTasks),
-    { segmentId, calendarEventId }
-  ) ?? currentTasks.find((task) => task.taskId === taskId);
+  const existing = selectTaskForCompletion(currentTasks, {
+    taskId,
+    segmentStart,
+    segmentEnd,
+    segmentId,
+    calendarEventId
+  });
 
   if (!existing) {
     showMessage('找不到要完成的任务。', true);
-    return;
+    return false;
   }
 
   let localTask = state.tasks.find((task) => (
@@ -954,6 +970,7 @@ function completeTask(taskId, segmentStart, {
   localTask.actualEnd = localNowString();
   recalculate();
   showMessage('任务已标记完成。下次同步时不会再创建新的未完成计划块。');
+  return true;
 }
 
 function handleAvailableBlockInput(event) {

@@ -7,7 +7,8 @@ import {
   calendarEventToPlanTask,
   calendarEventToProtectedBlock,
   mergePlanTasks,
-  resetCalendarStateForDateChange
+  resetCalendarStateForDateChange,
+  selectTaskForCompletion
 } from '../src/ui.js';
 
 test('ordinary calendar events become protected blocks with local wall-clock timestamps', () => {
@@ -642,4 +643,47 @@ test('sync operations update completed split segment by segment identity', () =>
       }
     ]
   );
+});
+
+test('selectTaskForCompletion rejects ambiguous split task fallback', () => {
+  const selected = selectTaskForCompletion([
+    {
+      taskId: 'ambiguous-split',
+      taskName: 'Ambiguous split',
+      segmentId: 'ambiguous-split_segment_1',
+      calendarEventId: 'event-one',
+      plannedStart: '2026-07-07T09:00:00',
+      plannedEnd: '2026-07-07T09:30:00'
+    },
+    {
+      taskId: 'ambiguous-split',
+      taskName: 'Ambiguous split',
+      segmentId: 'ambiguous-split_segment_2',
+      calendarEventId: 'event-two',
+      plannedStart: '2026-07-07T15:00:00',
+      plannedEnd: '2026-07-07T15:30:00'
+    }
+  ], {
+    taskId: 'ambiguous-split',
+    segmentStart: '2026-07-07T12:00:00',
+    segmentEnd: '2026-07-07T12:10:00'
+  });
+
+  assert.equal(selected, null);
+});
+
+test('selectTaskForCompletion allows task id fallback for a single candidate', () => {
+  const task = {
+    taskId: 'single-task',
+    taskName: 'Single task',
+    calendarEventId: 'event-single',
+    plannedStart: '2026-07-07T09:00:00',
+    plannedEnd: '2026-07-07T09:30:00'
+  };
+
+  assert.equal(selectTaskForCompletion([task], {
+    taskId: 'single-task',
+    segmentStart: '2026-07-07T12:00:00',
+    segmentEnd: '2026-07-07T12:10:00'
+  }), task);
 });
