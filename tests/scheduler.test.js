@@ -211,6 +211,46 @@ test('proportional compression takes extra time mostly from flexible tasks', () 
   assert.equal(allocations.get('弹性小任务'), 20);
 });
 
+test('proportional compression reduces non-splittable actual duration to fit an available block', () => {
+  const result = scheduleDay({
+    planDate: PLAN_DATE,
+    now: NOW,
+    availableBlocks: [
+      block('09:00', '10:00', CONTEXTS.WORK),
+      block('10:00', '15:15', CONTEXTS.HOME)
+    ],
+    protectedBlocks: [],
+    allocationMode: 'proportional',
+    tasks: [
+      task({
+        taskName: '编码',
+        taskType: '编码工作',
+        desiredMinutes: 300,
+        minimumMinutes: 45,
+        importance: 5
+      }),
+      task({
+        taskName: '阅读',
+        taskType: '复杂教程和学习',
+        desiredMinutes: 300,
+        minimumMinutes: 44,
+        minSegmentMinutes: 10,
+        executionContext: CONTEXTS.HOME,
+        importance: 4
+      })
+    ]
+  });
+
+  const codingSegments = scheduledSegments(result).filter((segment) => segment.taskName === '编码');
+  const codingCompression = result.compression.allocations.find((item) => item.taskName === '编码');
+
+  assert.equal(result.status, 'partial');
+  assert.equal(result.compression.availableMinutes, 375);
+  assert.equal(codingSegments.length, 1);
+  assert.equal(codingSegments[0].allocatedMinutes, 60);
+  assert.equal(codingCompression.allocatedMinutes, 60);
+});
+
 test('proportional compression reports conflict only when minimums cannot fit', () => {
   const result = scheduleDay({
     planDate: PLAN_DATE,

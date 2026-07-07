@@ -210,6 +210,34 @@ function compressionSummary(tasks, allocations, availableMinutes) {
   };
 }
 
+function withActualCompressionAllocations(compression, segments) {
+  if (!compression) {
+    return null;
+  }
+
+  const actualByTask = new Map();
+
+  for (const segment of segments) {
+    if (segment.status !== TASK_STATUSES.SCHEDULED) {
+      continue;
+    }
+
+    actualByTask.set(
+      segment.taskId,
+      (actualByTask.get(segment.taskId) ?? 0) + segment.allocatedMinutes
+    );
+  }
+
+  return {
+    ...compression,
+    allocations: compression.allocations.map((item) => ({
+      ...item,
+      plannedMinutes: item.allocatedMinutes,
+      allocatedMinutes: actualByTask.get(item.taskId) ?? 0
+    }))
+  };
+}
+
 function allocateProportionalDurations(tasks, capacityMinutes, now) {
   const requiredMinimum = tasks.reduce((sum, task) => (
     sum + task.effectiveMinimumMinutes
@@ -305,26 +333,47 @@ function placeTask(task, minutes, blocks) {
     const compatible = rankedCompatibleBlocks(task, remainingBlocks);
     let placed = false;
 
-    for (const item of compatible) {
+    const candidates = task.splittable
+      ? compatible
+      : [
+          compatible.find((item) => intervalMinutes(
+            remainingBlocks[item.index].start,
+            remainingBlocks[item.index].end
+          ) >= remaining),
+          ...compatible
+            .filter((item) => {
+              const block = remainingBlocks[item.index];
+              return intervalMinutes(block.start, block.end) >= task.effectiveMinimumMinutes;
+            })
+            .sort((left, right) => {
+              const leftBlock = remainingBlocks[left.index];
+              const rightBlock = remainingBlocks[right.index];
+              return intervalMinutes(rightBlock.start, rightBlock.end)
+                - intervalMinutes(leftBlock.start, leftBlock.end);
+            })
+        ].filter(Boolean);
+
+    for (const item of candidates) {
       const block = remainingBlocks[item.index];
       const capacity = intervalMinutes(block.start, block.end);
       const minimumForSegment = task.splittable
         ? task.minSegmentMinutes
-        : remaining;
+        : Math.min(remaining, task.effectiveMinimumMinutes);
 
       if (capacity < minimumForSegment) {
         continue;
       }
 
       const used = task.splittable ? Math.min(remaining, capacity) : remaining;
+      const actualUsed = task.splittable ? used : Math.min(used, capacity);
 
-      if (task.splittable && used < task.minSegmentMinutes) {
+      if (task.splittable && actualUsed < task.minSegmentMinutes) {
         continue;
       }
 
-      const segment = segmentForTask(task, block.start, used);
+      const segment = segmentForTask(task, block.start, actualUsed);
       segments.push(segment);
-      remaining -= used;
+      remaining -= actualUsed;
       remainingBlocks = subtractIntervals(remainingBlocks, [segment]);
       placed = true;
       break;
@@ -554,6 +603,6 @@ export function scheduleDay({
     planDate,
     segments: sortSegments([...completed, ...scheduled]),
     unscheduled,
-    compression
+    compression: withActualCompressionAllocations(compression, scheduled)
   };
 }
