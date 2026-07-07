@@ -279,6 +279,76 @@ function taskCandidatesByTaskId(tasks) {
   return candidates;
 }
 
+function taskEditKey(task) {
+  if (task.calendarEventId) {
+    return `event:${task.calendarEventId}`;
+  }
+
+  if (task.segmentId) {
+    return `segment:${task.segmentId}`;
+  }
+
+  return `task:${task.taskId}`;
+}
+
+function sameEditableTask(left, right) {
+  if (left.calendarEventId && right.calendarEventId) {
+    return left.calendarEventId === right.calendarEventId;
+  }
+
+  if (left.segmentId && right.segmentId) {
+    return left.segmentId === right.segmentId;
+  }
+
+  return !left.calendarEventId
+    && !right.calendarEventId
+    && !left.segmentId
+    && !right.segmentId
+    && left.taskId === right.taskId;
+}
+
+function activeEditableTask(task) {
+  return task.status !== TASK_STATUSES.COMPLETED
+    && task.status !== TASK_STATUSES.SKIPPED;
+}
+
+export function editableTasksForSchedule(schedule, tasks) {
+  if (schedule?.status !== 'conflict') {
+    return [];
+  }
+
+  return tasks.filter(activeEditableTask);
+}
+
+export function formInputForTask(task) {
+  return {
+    taskName: task.taskName ?? '',
+    taskType: task.taskType ?? '自定义',
+    desiredMinutes: String(task.desiredMinutes ?? ''),
+    minimumMinutes: String(task.minimumMinutes ?? ''),
+    importance: String(task.importance ?? ''),
+    deadline: task.deadline ? normalizeDateTime(task.deadline).slice(0, 16) : '',
+    executionContext: task.executionContext ?? CONTEXTS.ANY,
+    fixed: Boolean(task.fixed),
+    fixedStart: toTimeInputValue(task.fixedStart),
+    fixedEnd: toTimeInputValue(task.fixedEnd)
+  };
+}
+
+export function upsertLocalTask(tasks, editedTask) {
+  const index = tasks.findIndex((task) => sameEditableTask(task, editedTask));
+
+  if (index === -1) {
+    return [...tasks, editedTask];
+  }
+
+  return [
+    ...tasks.slice(0, index),
+    editedTask,
+    ...tasks.slice(index + 1)
+  ];
+}
+
 function sameDateTime(left, right) {
   return Boolean(left && right) && normalizeDateTime(left) === normalizeDateTime(right);
 }
@@ -383,8 +453,8 @@ export function mergePlanTasks({ calendarTasks = [], localTasks = [] }) {
     }
 
     if (
-      task.status === TASK_STATUSES.COMPLETED
-        && calendarTask?.calendarEventId === task.calendarEventId
+      calendarTask?.calendarEventId === task.calendarEventId
+        && (task.status === TASK_STATUSES.COMPLETED || task.localOverride)
     ) {
       merged[calendarIndex] = task;
     }
@@ -547,7 +617,8 @@ function createState() {
       .filter((block) => block.enabled)
       .map(blockFromSetting),
     schedule: null,
-    lastSyncOperations: emptySyncOperations()
+    lastSyncOperations: emptySyncOperations(),
+    editingTaskKey: null
   };
 }
 
@@ -706,6 +777,40 @@ function renderConflictPanel() {
   panel.append(list);
 }
 
+function appendEditButton(parent, task) {
+  const button = document.createElement('button');
+  button.type = 'button';
+  button.textContent = '编辑';
+  button.dataset.editTaskKey = taskEditKey(task);
+  parent.append(button);
+}
+
+function renderConflictEditableTasks(root, tasks) {
+  const editableTasks = editableTasksForSchedule(state.schedule, tasks);
+
+  if (editableTasks.length === 0) {
+    return;
+  }
+
+  const wrapper = document.createElement('div');
+  wrapper.className = 'schedule-item';
+  appendText(wrapper, '当前未完成任务（可编辑后重排）', 'strong');
+
+  for (const task of editableTasks) {
+    const row = document.createElement('div');
+    row.className = 'schedule-actions';
+    appendText(
+      row,
+      `${task.taskName}：想要 ${task.desiredMinutes} 分钟，最小 ${task.minimumMinutes} 分钟`,
+      'span'
+    );
+    appendEditButton(row, task);
+    wrapper.append(row);
+  }
+
+  root.append(wrapper);
+}
+
 function renderSchedule() {
   const root = element('scheduleList');
   const currentTasks = allTasks();
@@ -742,6 +847,13 @@ function renderSchedule() {
       'div'
     ).className = 'muted';
 
+    const actions = document.createElement('div');
+    actions.className = 'schedule-actions';
+
+    if (matchedTask) {
+      appendEditButton(actions, matchedTask);
+    }
+
     if (segment.status !== TASK_STATUSES.COMPLETED) {
       const button = document.createElement('button');
       button.type = 'button';
@@ -755,11 +867,17 @@ function renderSchedule() {
       if (matchedTask?.calendarEventId) {
         button.dataset.calendarEventId = matchedTask.calendarEventId;
       }
-      item.append(button);
+      actions.append(button);
+    }
+
+    if (actions.childElementCount > 0) {
+      item.append(actions);
     }
 
     root.append(item);
   }
+
+  renderConflictEditableTasks(root, currentTasks);
 
   if (state.schedule.status === 'partial' && state.schedule.unscheduled?.length) {
     const partial = document.createElement('div');
@@ -915,19 +1033,111 @@ function taskInputFromForm(form) {
   };
 }
 
-function addTaskFromForm(event) {
+function setTaskFormMode(task = null) {
+  const submit = element('taskSubmitButton');
+  const cancel = element('cancelEditTaskButton');
+
+  if (submit) {
+    submit.textContent = task ? '保存任务' : '添加任务';
+  }
+
+  if (cancel) {
+    cancel.className = task ? '' : 'hidden';
+  }
+}
+
+function fillTaskForm(task) {
+  const form = element('taskForm');
+
+  if (!form) {
+    return;
+  }
+
+  const input = formInputForTask(task);
+  form.elements.taskName.value = input.taskName;
+  form.elements.taskType.value = input.taskType;
+  form.elements.desiredMinutes.value = input.desiredMinutes;
+  form.elements.minimumMinutes.value = input.minimumMinutes;
+  form.elements.importance.value = input.importance;
+  form.elements.deadline.value = input.deadline;
+  form.elements.executionContext.value = input.executionContext;
+  form.elements.fixed.checked = input.fixed;
+  form.elements.fixedStart.value = input.fixedStart;
+  form.elements.fixedEnd.value = input.fixedEnd;
+}
+
+function resetTaskForm() {
+  const form = element('taskForm');
+
+  if (form) {
+    form.reset();
+  }
+
+  state.editingTaskKey = null;
+  renderTaskTypeOptions();
+  renderExecutionContextOptions();
+  setTaskFormMode(null);
+}
+
+function findEditableTaskByKey(key) {
+  return allTasks().find((task) => taskEditKey(task) === key) ?? null;
+}
+
+function editTask(key) {
+  const task = findEditableTaskByKey(key);
+
+  if (!task) {
+    showMessage('找不到要编辑的任务。', true);
+    return;
+  }
+
+  state.editingTaskKey = key;
+  fillTaskForm(task);
+  setTaskFormMode(task);
+  element('taskForm')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
+
+function editedTaskFromForm(form) {
+  const existing = findEditableTaskByKey(state.editingTaskKey);
+
+  if (!existing) {
+    throw new RangeError('editing task no longer exists');
+  }
+
+  const updated = createTask({
+    ...taskInputFromForm(form),
+    taskId: existing.taskId,
+    status: existing.status
+  });
+
+  return {
+    ...updated,
+    calendarEventId: existing.calendarEventId ?? null,
+    segmentId: existing.segmentId ?? null,
+    planDate: existing.planDate ?? state.planDate,
+    localOverride: Boolean(existing.calendarEventId)
+  };
+}
+
+function submitTaskForm(event) {
   event.preventDefault();
 
   try {
+    if (state.editingTaskKey) {
+      state.tasks = upsertLocalTask(state.tasks, editedTaskFromForm(event.currentTarget));
+      resetTaskForm();
+      recalculate();
+      showMessage('任务已保存。');
+      return;
+    }
+
     const task = createTask(taskInputFromForm(event.currentTarget));
-    state.tasks.push(task);
-    event.currentTarget.reset();
-    renderTaskTypeOptions();
-    renderExecutionContextOptions();
+    state.tasks = upsertLocalTask(state.tasks, task);
+    resetTaskForm();
     recalculate();
     showMessage('任务已添加。');
   } catch (error) {
-    showMessage(`添加任务失败：${error.message}`, true);
+    showMessage(`保存任务失败：${error.message}`, true);
   }
 }
 
@@ -1012,6 +1222,13 @@ function addAvailableBlock() {
 }
 
 function handleScheduleClick(event) {
+  const editKey = event.target.dataset.editTaskKey;
+
+  if (editKey) {
+    editTask(editKey);
+    return;
+  }
+
   const taskId = event.target.dataset.completeTaskId;
 
   if (!taskId) {
@@ -1036,13 +1253,15 @@ function wireEvents() {
   element('availableBlocks')?.addEventListener('input', handleAvailableBlockInput);
   element('availableBlocks')?.addEventListener('change', handleAvailableBlockInput);
   element('availableBlocks')?.addEventListener('click', handleAvailableBlockClick);
-  element('taskForm')?.addEventListener('submit', addTaskFromForm);
+  element('taskForm')?.addEventListener('submit', submitTaskForm);
+  element('cancelEditTaskButton')?.addEventListener('click', resetTaskForm);
   element('scheduleList')?.addEventListener('click', handleScheduleClick);
   element('planDateInput')?.addEventListener('change', (event) => {
     state = resetCalendarStateForDateChange(
       state,
       event.target.value || localDateString()
     );
+    resetTaskForm();
     recalculate();
   });
 }
@@ -1065,6 +1284,7 @@ export function initApp() {
   populateInitialValues();
   renderTaskTypeOptions();
   renderExecutionContextOptions();
+  setTaskFormMode(null);
   renderAvailableBlocks();
   wireEvents();
   renderSchedule();

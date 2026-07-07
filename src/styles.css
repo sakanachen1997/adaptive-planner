@@ -115,6 +115,14 @@ button {
   color: var(--ok);
 }
 
+.schedule-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  align-items: center;
+  margin-top: 8px;
+}
+
 .schedule-item.error {
   color: var(--danger);
 }

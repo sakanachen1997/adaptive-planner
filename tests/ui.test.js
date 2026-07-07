@@ -6,9 +6,12 @@ import {
   buildSyncOperations,
   calendarEventToPlanTask,
   calendarEventToProtectedBlock,
+  editableTasksForSchedule,
+  formInputForTask,
   mergePlanTasks,
   resetCalendarStateForDateChange,
-  selectTaskForCompletion
+  selectTaskForCompletion,
+  upsertLocalTask
 } from '../src/ui.js';
 
 test('ordinary calendar events become protected blocks with local wall-clock timestamps', () => {
@@ -25,6 +28,85 @@ test('ordinary calendar events become protected blocks with local wall-clock tim
     summary: 'Doctor',
     calendarEventId: 'ordinary-1'
   });
+});
+
+test('conflict schedules expose active tasks for editing', () => {
+  const editable = editableTasksForSchedule(
+    { status: 'conflict', segments: [] },
+    [
+      { taskId: 'pending', taskName: 'Pending', status: TASK_STATUSES.PENDING },
+      { taskId: 'scheduled', taskName: 'Scheduled', status: TASK_STATUSES.SCHEDULED },
+      { taskId: 'done', taskName: 'Done', status: TASK_STATUSES.COMPLETED },
+      { taskId: 'skipped', taskName: 'Skipped', status: TASK_STATUSES.SKIPPED }
+    ]
+  );
+
+  assert.deepEqual(editable.map((task) => task.taskId), ['pending', 'scheduled']);
+});
+
+test('formInputForTask preserves task fields as form-ready values', () => {
+  assert.deepEqual(formInputForTask({
+    taskName: 'Math',
+    taskType: '自定义',
+    desiredMinutes: 120,
+    minimumMinutes: 45,
+    importance: 4,
+    deadline: '2026-07-07T18:30:00',
+    executionContext: 'home',
+    fixed: true,
+    fixedStart: '19:00',
+    fixedEnd: '20:00'
+  }), {
+    taskName: 'Math',
+    taskType: '自定义',
+    desiredMinutes: '120',
+    minimumMinutes: '45',
+    importance: '4',
+    deadline: '2026-07-07T18:30',
+    executionContext: 'home',
+    fixed: true,
+    fixedStart: '19:00',
+    fixedEnd: '20:00'
+  });
+});
+
+test('upsertLocalTask replaces the matching local task instead of duplicating it', () => {
+  const existing = [
+    { taskId: 'task-1', taskName: 'Old local' },
+    { taskId: 'task-2', taskName: 'Other local' }
+  ];
+
+  const updated = upsertLocalTask(existing, { taskId: 'task-1', taskName: 'Updated local' });
+
+  assert.deepEqual(updated, [
+    { taskId: 'task-1', taskName: 'Updated local' },
+    { taskId: 'task-2', taskName: 'Other local' }
+  ]);
+});
+
+test('mergePlanTasks prefers edited local copy of a Calendar plan task', () => {
+  const merged = mergePlanTasks({
+    calendarTasks: [
+      {
+        taskId: 'calendar-task',
+        taskName: 'Calendar version',
+        calendarEventId: 'event-1',
+        status: TASK_STATUSES.SCHEDULED
+      }
+    ],
+    localTasks: [
+      {
+        taskId: 'calendar-task',
+        taskName: 'Edited version',
+        calendarEventId: 'event-1',
+        status: TASK_STATUSES.SCHEDULED,
+        localOverride: true
+      }
+    ]
+  });
+
+  assert.equal(merged.length, 1);
+  assert.equal(merged[0].taskName, 'Edited version');
 });
 
 test('plan calendar events become tasks and retain their calendar event id', () => {
