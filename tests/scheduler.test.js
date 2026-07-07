@@ -139,11 +139,79 @@ test('proportional compression schedules tasks by desired-time ratio when minimu
   assert.equal(result.status, 'ok');
   assert.equal(result.compression.desiredMinutes, 180);
   assert.equal(result.compression.availableMinutes, 90);
-  assert.equal(allocations.get('英语'), 60);
-  assert.equal(allocations.get('数学'), 30);
+  assert.equal(allocations.get('英语'), 56);
+  assert.equal(allocations.get('数学'), 34);
 });
 
-test('proportional compression shows recovery actions only when compressed work drops below minimum', () => {
+test('proportional compression protects minimum durations before compressing flexible time', () => {
+  const result = scheduleDay({
+    planDate: PLAN_DATE,
+    now: NOW,
+    availableBlocks: [block('09:00', '10:00')],
+    protectedBlocks: [],
+    allocationMode: 'proportional',
+    tasks: [
+      task({
+        taskName: '英语',
+        desiredMinutes: 80,
+        minimumMinutes: 45,
+        minSegmentMinutes: 10,
+        importance: 4
+      }),
+      task({
+        taskName: '数学',
+        desiredMinutes: 20,
+        minimumMinutes: 15,
+        minSegmentMinutes: 10,
+        importance: 4
+      })
+    ]
+  });
+
+  const allocations = new Map(result.compression.allocations.map((item) => [
+    item.taskName,
+    item.allocatedMinutes
+  ]));
+
+  assert.equal(result.status, 'ok');
+  assert.equal(allocations.get('英语'), 45);
+  assert.equal(allocations.get('数学'), 15);
+});
+
+test('proportional compression takes extra time mostly from flexible tasks', () => {
+  const result = scheduleDay({
+    planDate: PLAN_DATE,
+    now: NOW,
+    availableBlocks: [block('09:00', '10:20')],
+    protectedBlocks: [],
+    allocationMode: 'proportional',
+    tasks: [
+      task({
+        taskName: '弹性大任务',
+        desiredMinutes: 75,
+        minimumMinutes: 45,
+        importance: 4
+      }),
+      task({
+        taskName: '弹性小任务',
+        desiredMinutes: 25,
+        minimumMinutes: 15,
+        importance: 4
+      })
+    ]
+  });
+
+  const allocations = new Map(result.compression.allocations.map((item) => [
+    item.taskName,
+    item.allocatedMinutes
+  ]));
+
+  assert.equal(result.status, 'ok');
+  assert.equal(allocations.get('弹性大任务'), 60);
+  assert.equal(allocations.get('弹性小任务'), 20);
+});
+
+test('proportional compression reports conflict only when minimums cannot fit', () => {
   const result = scheduleDay({
     planDate: PLAN_DATE,
     now: NOW,
@@ -167,18 +235,9 @@ test('proportional compression shows recovery actions only when compressed work 
   });
 
   assert.equal(result.status, 'conflict');
-  assert.equal(result.conflict.kind, 'compressed_below_minimum');
-  assert.deepEqual(
-    result.conflict.belowMinimum.map((item) => ({
-      taskName: item.taskName,
-      allocatedMinutes: item.allocatedMinutes,
-      minimumMinutes: item.minimumMinutes
-    })),
-    [
-      { taskName: '英语', allocatedMinutes: 40, minimumMinutes: 45 },
-      { taskName: '数学', allocatedMinutes: 10, minimumMinutes: 15 }
-    ]
-  );
+  assert.equal(result.conflict.kind, 'minimum_overflow');
+  assert.equal(result.conflict.requiredMinimumMinutes, 60);
+  assert.equal(result.conflict.availableMinutes, 50);
   assert.deepEqual(result.conflict.actions, [
     '增加可用时间后重排',
     '降低部分任务最小时长后重排',

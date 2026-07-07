@@ -364,6 +364,10 @@ export function compressionAllocationForTask(schedule, taskId) {
   return schedule?.compression?.allocations?.find((item) => item.taskId === taskId) ?? null;
 }
 
+export function compressionModeAfterPlanInputChange() {
+  return false;
+}
+
 function sameDateTime(left, right) {
   return Boolean(left && right) && normalizeDateTime(left) === normalizeDateTime(right);
 }
@@ -1007,6 +1011,10 @@ function recalculateWithoutCompression() {
   recalculate();
 }
 
+function markPlanInputChanged() {
+  state.proportionalCompression = compressionModeAfterPlanInputChange(state.proportionalCompression);
+}
+
 function compressProportionally() {
   state.proportionalCompression = true;
   recalculate();
@@ -1016,6 +1024,7 @@ function fillDefaultBlocks() {
   state.availableBlocks = state.settings.defaultBlocks
     .filter((block) => block.enabled)
     .map(blockFromSetting);
+  markPlanInputChanged();
   renderAvailableBlocks();
   recalculate();
 }
@@ -1053,6 +1062,7 @@ async function loadCalendar() {
 
   try {
     state.calendarEvents = await listPrimaryEvents(timeMin, timeMax);
+    markPlanInputChanged();
     showMessage(`已读取 ${state.calendarEvents.length} 个日历事件。`);
     recalculate();
   } catch (error) {
@@ -1202,6 +1212,7 @@ function submitTaskForm(event) {
   try {
     if (state.editingTaskKey) {
       state.tasks = upsertLocalTask(state.tasks, editedTaskFromForm(event.currentTarget));
+      markPlanInputChanged();
       resetTaskForm();
       recalculate();
       showMessage('任务已保存。');
@@ -1210,6 +1221,7 @@ function submitTaskForm(event) {
 
     const task = createTask(taskInputFromForm(event.currentTarget));
     state.tasks = upsertLocalTask(state.tasks, task);
+    markPlanInputChanged();
     resetTaskForm();
     recalculate();
     showMessage('任务已添加。');
@@ -1255,6 +1267,7 @@ function completeTask(taskId, segmentStart, {
   localTask.status = TASK_STATUSES.COMPLETED;
   localTask.actualStart = segmentStart;
   localTask.actualEnd = localNowString();
+  markPlanInputChanged();
   recalculate();
   showMessage('任务已标记完成。下次同步时不会再创建新的未完成计划块。');
   return true;
@@ -1269,6 +1282,7 @@ function handleAvailableBlockInput(event) {
   }
 
   state.availableBlocks[index][field] = event.target.value;
+  markPlanInputChanged();
   saveCurrentBlocksAsDefaults();
   recalculate();
 }
@@ -1281,6 +1295,7 @@ function handleAvailableBlockClick(event) {
   }
 
   state.availableBlocks.splice(index, 1);
+  markPlanInputChanged();
   saveCurrentBlocksAsDefaults();
   renderAvailableBlocks();
   recalculate();
@@ -1293,6 +1308,7 @@ function addAvailableBlock() {
     context: CONTEXTS.ANY,
     enabled: true
   });
+  markPlanInputChanged();
   saveCurrentBlocksAsDefaults();
   renderAvailableBlocks();
   recalculate();
@@ -1345,7 +1361,7 @@ function wireEvents() {
       state,
       event.target.value || localDateString()
     );
-    state.proportionalCompression = false;
+    markPlanInputChanged();
     resetTaskForm();
     recalculate();
   });

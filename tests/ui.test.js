@@ -7,6 +7,7 @@ import {
   calendarEventToPlanTask,
   calendarEventToProtectedBlock,
   compressionAllocationForTask,
+  compressionModeAfterPlanInputChange,
   editableTasksForSchedule,
   formInputForTask,
   shouldOfferCompression,
@@ -157,6 +158,11 @@ test('compressionAllocationForTask reads the compressed allocation by task id', 
     allocatedMinutes: 40
   });
   assert.equal(compressionAllocationForTask(schedule, 'missing'), null);
+});
+
+test('plan input changes exit proportional compression mode', () => {
+  assert.equal(compressionModeAfterPlanInputChange(true), false);
+  assert.equal(compressionModeAfterPlanInputChange(false), false);
 });
 
 test('plan calendar events become tasks and retain their calendar event id', () => {

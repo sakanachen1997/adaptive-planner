@@ -211,28 +211,38 @@ function compressionSummary(tasks, allocations, availableMinutes) {
 }
 
 function allocateProportionalDurations(tasks, capacityMinutes, now) {
-  const desiredTotal = tasks.reduce((sum, task) => sum + task.effectiveDesiredMinutes, 0);
+  const requiredMinimum = tasks.reduce((sum, task) => (
+    sum + task.effectiveMinimumMinutes
+  ), 0);
+  const flexibleCapacity = Math.max(0, capacityMinutes - requiredMinimum);
+  const desiredExtraTotal = tasks.reduce((sum, task) => (
+    sum + Math.max(0, task.effectiveDesiredMinutes - task.effectiveMinimumMinutes)
+  ), 0);
+  const usableExtra = Math.min(flexibleCapacity, desiredExtraTotal);
   const weightedTasks = tasks.map((task) => ({
     task,
-    duration: 0,
+    duration: task.effectiveMinimumMinutes,
+    desiredExtra: Math.max(0, task.effectiveDesiredMinutes - task.effectiveMinimumMinutes),
     fraction: 0,
     priority: calculatePriority(task, now)
   }));
 
-  if (desiredTotal <= 0 || capacityMinutes <= 0) {
-    return new Map(weightedTasks.map(({ task }) => [task.taskId, 0]));
+  if (usableExtra <= 0 || desiredExtraTotal <= 0) {
+    return new Map(weightedTasks.map(({ task, duration }) => [task.taskId, duration]));
   }
 
-  let distributed = 0;
+  let distributedExtra = 0;
 
   for (const item of weightedTasks) {
-    const exact = (item.task.effectiveDesiredMinutes / desiredTotal) * capacityMinutes;
-    item.duration = Math.floor(exact);
-    item.fraction = exact - item.duration;
-    distributed += item.duration;
+    const exactExtra = (item.desiredExtra / desiredExtraTotal) * usableExtra;
+    const flooredExtra = Math.floor(exactExtra);
+    const extra = Math.min(item.desiredExtra, flooredExtra);
+    item.duration += extra;
+    item.fraction = exactExtra - flooredExtra;
+    distributedExtra += extra;
   }
 
-  let leftover = capacityMinutes - distributed;
+  let leftover = usableExtra - distributedExtra;
 
   while (leftover > 0) {
     const candidates = weightedTasks
@@ -446,6 +456,10 @@ export function scheduleDay({
     sum + task.effectiveDesiredMinutes
   ), 0);
 
+  if (requiredMinimumMinutes > availableMinutes) {
+    return conflictResult(planDate, completed, availableMinutes, requiredMinimumMinutes);
+  }
+
   if (
     requireCompressionConfirmation
       && allocationMode !== 'proportional'
@@ -480,10 +494,6 @@ export function scheduleDay({
       belowMinimum,
       actions: [...CONFLICT_ACTIONS]
     });
-  }
-
-  if (requiredMinimumMinutes > availableMinutes) {
-    return conflictResult(planDate, completed, availableMinutes, requiredMinimumMinutes);
   }
 
   let blocks = available.map((block) => ({ ...block }));
