@@ -1,6 +1,695 @@
-export function initApp() {
-  const scheduleList = document.getElementById('scheduleList');
-  if (scheduleList) {
-    scheduleList.textContent = '应用骨架已加载，后续任务会接入计划逻辑。';
+import {
+  APP_ID,
+  CONTEXTS,
+  TASK_STATUSES,
+  TASK_TYPE_DEFAULTS,
+  createTask
+} from './models.js';
+import {
+  buildDescription,
+  extractPlanMetadata,
+  isPlanManagedEvent
+} from './metadata.js';
+import { scheduleDay } from './scheduler.js';
+import { combineDateAndTime, normalizeDateTime } from './time.js';
+import { loadSettings, saveSettings } from './storage.js';
+import {
+  createPlanEvent,
+  initGoogleAuth,
+  listPrimaryEvents,
+  requestAccessToken,
+  updatePlanEvent
+} from './calendarClient.js';
+
+const CONTEXT_OPTIONS = Object.freeze([
+  { value: CONTEXTS.ANY, label: '任意时间' },
+  { value: CONTEXTS.WORK, label: '仅工作时间' },
+  { value: CONTEXTS.HOME, label: '仅下班后' },
+  { value: CONTEXTS.CUSTOM, label: '自定义时间窗' }
+]);
+
+const BLOCK_CONTEXT_OPTIONS = Object.freeze([
+  { value: CONTEXTS.ANY, label: '任意时间' },
+  { value: CONTEXTS.WORK, label: '工作时间' },
+  { value: CONTEXTS.HOME, label: '下班后' },
+  { value: CONTEXTS.CUSTOM, label: '自定义' }
+]);
+
+const DEFAULT_MESSAGE = '先生成可用时间块并添加任务，然后重新计算。';
+
+function localDateString(date = new Date()) {
+  return normalizeDateTime(date).slice(0, 10);
+}
+
+function localNowString() {
+  return normalizeDateTime(new Date());
+}
+
+function nextLocalDate(planDate) {
+  const date = new Date(`${planDate}T00:00:00`);
+  date.setDate(date.getDate() + 1);
+  return localDateString(date);
+}
+
+function toCalendarQueryDateTime(planDate, time) {
+  return new Date(`${planDate}T${time}`).toISOString();
+}
+
+function toTimeInputValue(value) {
+  return String(value ?? '').slice(0, 5);
+}
+
+function blockFromSetting(block) {
+  return {
+    start: toTimeInputValue(block.start) || '09:00',
+    end: toTimeInputValue(block.end) || '10:00',
+    context: block.context || CONTEXTS.ANY,
+    enabled: block.enabled !== false
+  };
+}
+
+function blockToSetting(block) {
+  return {
+    start: block.start,
+    end: block.end,
+    context: block.context,
+    enabled: block.enabled !== false
+  };
+}
+
+function element(id) {
+  return document.getElementById(id);
+}
+
+function firstElement(selector) {
+  return document.querySelector(selector);
+}
+
+function option(value, label) {
+  const node = document.createElement('option');
+  node.value = value;
+  node.textContent = label;
+  return node;
+}
+
+function clear(node) {
+  node.replaceChildren();
+}
+
+function appendText(parent, text, tagName = 'span') {
+  const node = document.createElement(tagName);
+  node.textContent = text;
+  parent.append(node);
+  return node;
+}
+
+export function calendarEventToProtectedBlock(event) {
+  if (isPlanManagedEvent(event)) {
+    return null;
   }
+
+  const start = event?.start?.dateTime;
+  const end = event?.end?.dateTime;
+
+  if (!start || !end) {
+    return null;
+  }
+
+  return {
+    start: normalizeDateTime(start),
+    end: normalizeDateTime(end),
+    summary: event.summary || '普通日程',
+    calendarEventId: event.id ?? null
+  };
+}
+
+export function calendarEventToPlanTask(event) {
+  const metadata = extractPlanMetadata(event?.description ?? '');
+
+  if (!metadata) {
+    return null;
+  }
+
+  return {
+    ...metadata,
+    calendarEventId: event.id ?? null
+  };
+}
+
+function metadataForSegment(segment, task, planDate) {
+  const segmentId = `${segment.taskId}_${segment.start}_${segment.end}`;
+
+  return {
+    ...(task ?? {}),
+    schemaVersion: 1,
+    app: APP_ID,
+    planDate,
+    taskId: segment.taskId,
+    taskName: segment.taskName,
+    segmentId,
+    status: TASK_STATUSES.SCHEDULED
+  };
+}
+
+export function buildSyncOperations({ schedule, tasks, planDate }) {
+  const result = {
+    creates: [],
+    updates: []
+  };
+
+  if (!schedule || schedule.status === 'conflict') {
+    return result;
+  }
+
+  const tasksById = new Map(tasks.map((task) => [task.taskId, task]));
+  const usedEventIds = new Set();
+
+  for (const segment of schedule.segments ?? []) {
+    if (segment.status === TASK_STATUSES.COMPLETED) {
+      continue;
+    }
+
+    const task = tasksById.get(segment.taskId) ?? {
+      taskId: segment.taskId,
+      taskName: segment.taskName
+    };
+    const metadata = metadataForSegment(segment, task, planDate);
+    const description = buildDescription('由 Adaptive Planner 创建。', metadata);
+    const operation = {
+      segment,
+      task,
+      description
+    };
+
+    if (task.calendarEventId && !usedEventIds.has(task.calendarEventId)) {
+      usedEventIds.add(task.calendarEventId);
+      result.updates.push({
+        ...operation,
+        eventId: task.calendarEventId
+      });
+    } else {
+      result.creates.push(operation);
+    }
+  }
+
+  return result;
+}
+
+function createState() {
+  const settings = loadSettings();
+
+  return {
+    settings,
+    planDate: localDateString(),
+    calendarEvents: [],
+    tasks: [],
+    availableBlocks: settings.defaultBlocks
+      .filter((block) => block.enabled)
+      .map(blockFromSetting),
+    schedule: null,
+    lastSyncOperations: { creates: [], updates: [] }
+  };
+}
+
+let state = createState();
+
+function planTasksFromCalendar() {
+  return state.calendarEvents
+    .map(calendarEventToPlanTask)
+    .filter(Boolean);
+}
+
+function protectedBlocksFromCalendar() {
+  return state.calendarEvents
+    .map(calendarEventToProtectedBlock)
+    .filter(Boolean);
+}
+
+function allTasks() {
+  const merged = new Map();
+
+  for (const task of planTasksFromCalendar()) {
+    merged.set(task.taskId, task);
+  }
+
+  for (const task of state.tasks) {
+    merged.set(task.taskId, task);
+  }
+
+  return [...merged.values()];
+}
+
+function concreteAvailableBlocks() {
+  return state.availableBlocks
+    .filter((block) => block.enabled !== false)
+    .map((block) => ({
+      start: combineDateAndTime(state.planDate, block.start),
+      end: combineDateAndTime(state.planDate, block.end),
+      context: block.context
+    }));
+}
+
+function showMessage(text, isError = false) {
+  const target = element('syncPreview');
+
+  if (!target) {
+    return;
+  }
+
+  target.textContent = text;
+  target.className = isError ? 'schedule-item error' : 'muted';
+}
+
+function saveCurrentBlocksAsDefaults() {
+  state.settings.defaultBlocks = state.availableBlocks.map(blockToSetting);
+  saveSettings(state.settings);
+}
+
+function renderTaskTypeOptions() {
+  const select = firstElement('select[name="taskType"]');
+
+  if (!select) {
+    return;
+  }
+
+  select.replaceChildren(
+    ...Object.keys(TASK_TYPE_DEFAULTS).map((taskType) => option(taskType, taskType))
+  );
+}
+
+function renderExecutionContextOptions() {
+  const select = firstElement('select[name="executionContext"]');
+
+  if (!select) {
+    return;
+  }
+
+  select.replaceChildren(
+    ...CONTEXT_OPTIONS.map(({ value, label }) => option(value, label))
+  );
+}
+
+function renderContextSelect(select, selectedValue) {
+  select.replaceChildren(
+    ...BLOCK_CONTEXT_OPTIONS.map(({ value, label }) => option(value, label))
+  );
+  select.value = selectedValue;
+}
+
+function renderAvailableBlocks() {
+  const root = element('availableBlocks');
+
+  if (!root) {
+    return;
+  }
+
+  clear(root);
+
+  if (state.availableBlocks.length === 0) {
+    appendText(root, '没有可用时间块。', 'p');
+    return;
+  }
+
+  state.availableBlocks.forEach((block, index) => {
+    const row = document.createElement('div');
+    row.className = 'row';
+
+    const start = document.createElement('input');
+    start.type = 'time';
+    start.value = block.start;
+    start.dataset.blockIndex = String(index);
+    start.dataset.blockField = 'start';
+    start.setAttribute('aria-label', '开始时间');
+
+    const end = document.createElement('input');
+    end.type = 'time';
+    end.value = block.end;
+    end.dataset.blockIndex = String(index);
+    end.dataset.blockField = 'end';
+    end.setAttribute('aria-label', '结束时间');
+
+    const context = document.createElement('select');
+    context.dataset.blockIndex = String(index);
+    context.dataset.blockField = 'context';
+    context.setAttribute('aria-label', '时间块场景');
+    renderContextSelect(context, block.context);
+
+    const remove = document.createElement('button');
+    remove.type = 'button';
+    remove.textContent = '删除';
+    remove.dataset.removeBlockIndex = String(index);
+
+    row.append(start, end, context, remove);
+    root.append(row);
+  });
+}
+
+function renderConflictPanel() {
+  const panel = element('conflictPanel');
+
+  if (!panel) {
+    return;
+  }
+
+  if (!state.schedule || state.schedule.status !== 'conflict') {
+    panel.className = 'hidden';
+    panel.replaceChildren();
+    return;
+  }
+
+  panel.className = 'conflict';
+  clear(panel);
+  appendText(panel, '计划冲突', 'strong');
+  appendText(
+    panel,
+    `可用时间 ${state.schedule.conflict.availableMinutes} 分钟，任务最小需要 ${state.schedule.conflict.requiredMinimumMinutes} 分钟。`,
+    'p'
+  );
+
+  const list = document.createElement('ol');
+  for (const action of state.schedule.conflict.actions) {
+    appendText(list, action, 'li');
+  }
+  panel.append(list);
+}
+
+function renderSchedule() {
+  const root = element('scheduleList');
+
+  renderConflictPanel();
+
+  if (!root) {
+    return;
+  }
+
+  clear(root);
+
+  if (!state.schedule) {
+    appendText(root, DEFAULT_MESSAGE, 'p');
+    renderSyncPreview();
+    return;
+  }
+
+  if ((state.schedule.segments ?? []).length === 0) {
+    appendText(root, '当前没有可显示的计划块。', 'p');
+  }
+
+  for (const segment of state.schedule.segments ?? []) {
+    const item = document.createElement('div');
+    item.className = `schedule-item ${segment.status === TASK_STATUSES.COMPLETED ? 'completed' : ''}`;
+
+    appendText(item, segment.taskName, 'strong');
+    appendText(
+      item,
+      `${segment.start.slice(11, 16)} - ${segment.end.slice(11, 16)}`
+        + (segment.allocatedMinutes ? `，${segment.allocatedMinutes} 分钟` : ''),
+      'div'
+    ).className = 'muted';
+
+    if (segment.status !== TASK_STATUSES.COMPLETED) {
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.textContent = '完成';
+      button.dataset.completeTaskId = segment.taskId;
+      button.dataset.segmentStart = segment.start;
+      item.append(button);
+    }
+
+    root.append(item);
+  }
+
+  if (state.schedule.status === 'partial' && state.schedule.unscheduled?.length) {
+    const partial = document.createElement('div');
+    partial.className = 'schedule-item error';
+    appendText(partial, '部分任务未完全安排：', 'strong');
+    const list = document.createElement('ul');
+    for (const item of state.schedule.unscheduled) {
+      appendText(list, `${item.taskName} 剩余 ${item.remainingMinutes} 分钟`, 'li');
+    }
+    partial.append(list);
+    root.append(partial);
+  }
+
+  renderSyncPreview();
+}
+
+function renderSyncPreview() {
+  const target = element('syncPreview');
+
+  if (!target) {
+    return;
+  }
+
+  if (!state.schedule) {
+    target.textContent = '还没有同步内容。';
+    target.className = 'muted';
+    return;
+  }
+
+  if (state.schedule.status === 'conflict') {
+    target.textContent = '解决冲突后才能同步。';
+    target.className = 'schedule-item error';
+    return;
+  }
+
+  state.lastSyncOperations = buildSyncOperations({
+    schedule: state.schedule,
+    tasks: allTasks(),
+    planDate: state.planDate
+  });
+
+  target.textContent = `同步预览：将创建 ${state.lastSyncOperations.creates.length} 个，更新 ${state.lastSyncOperations.updates.length} 个。`;
+  target.className = 'muted';
+}
+
+function recalculate() {
+  state.schedule = scheduleDay({
+    planDate: state.planDate,
+    now: localNowString(),
+    availableBlocks: concreteAvailableBlocks(),
+    protectedBlocks: protectedBlocksFromCalendar(),
+    tasks: allTasks()
+  });
+  renderSchedule();
+}
+
+function fillDefaultBlocks() {
+  state.availableBlocks = state.settings.defaultBlocks
+    .filter((block) => block.enabled)
+    .map(blockFromSetting);
+  renderAvailableBlocks();
+  recalculate();
+}
+
+function saveClientId() {
+  const input = element('clientIdInput');
+  state.settings.clientId = String(input?.value ?? '').trim();
+  saveSettings(state.settings);
+  showMessage('Client ID 已保存。');
+}
+
+function connectGoogleCalendar() {
+  const input = element('clientIdInput');
+  state.settings.clientId = String(input?.value ?? state.settings.clientId).trim();
+  saveSettings(state.settings);
+
+  try {
+    initGoogleAuth(state.settings.clientId, (response) => {
+      if (response?.error) {
+        showMessage(`Google 授权失败：${response.error}`, true);
+        return;
+      }
+
+      showMessage('Google Calendar 已连接。');
+    });
+    requestAccessToken();
+  } catch (error) {
+    showMessage(`Google 授权失败：${error.message}`, true);
+  }
+}
+
+async function loadCalendar() {
+  const timeMin = toCalendarQueryDateTime(state.planDate, '00:00:00');
+  const timeMax = toCalendarQueryDateTime(nextLocalDate(state.planDate), '00:00:00');
+
+  try {
+    state.calendarEvents = await listPrimaryEvents(timeMin, timeMax);
+    showMessage(`已读取 ${state.calendarEvents.length} 个日历事件。`);
+    recalculate();
+  } catch (error) {
+    showMessage(`读取日历失败：${error.message}`, true);
+  }
+}
+
+async function syncSchedule() {
+  if (!state.schedule || state.schedule.status === 'conflict') {
+    showMessage('没有可同步的计划，或当前计划仍有冲突。', true);
+    return;
+  }
+
+  const operations = buildSyncOperations({
+    schedule: state.schedule,
+    tasks: allTasks(),
+    planDate: state.planDate
+  });
+
+  try {
+    for (const operation of operations.creates) {
+      await createPlanEvent(operation.segment, operation.description);
+    }
+
+    for (const operation of operations.updates) {
+      await updatePlanEvent(operation.eventId, operation.segment, operation.description);
+    }
+
+    showMessage(`同步完成：创建 ${operations.creates.length} 个，更新 ${operations.updates.length} 个。`);
+    await loadCalendar();
+  } catch (error) {
+    showMessage(`同步失败：${error.message}`, true);
+  }
+}
+
+function taskInputFromForm(form) {
+  const data = new FormData(form);
+
+  return {
+    taskName: data.get('taskName'),
+    taskType: data.get('taskType'),
+    desiredMinutes: data.get('desiredMinutes'),
+    minimumMinutes: data.get('minimumMinutes'),
+    importance: data.get('importance'),
+    deadline: data.get('deadline'),
+    executionContext: data.get('executionContext'),
+    fixed: data.get('fixed') === 'on',
+    fixedStart: data.get('fixedStart'),
+    fixedEnd: data.get('fixedEnd')
+  };
+}
+
+function addTaskFromForm(event) {
+  event.preventDefault();
+
+  try {
+    const task = createTask(taskInputFromForm(event.currentTarget));
+    state.tasks.push(task);
+    event.currentTarget.reset();
+    renderTaskTypeOptions();
+    renderExecutionContextOptions();
+    recalculate();
+    showMessage('任务已添加。');
+  } catch (error) {
+    showMessage(`添加任务失败：${error.message}`, true);
+  }
+}
+
+function completeTask(taskId, segmentStart) {
+  const existing = allTasks().find((task) => task.taskId === taskId);
+
+  if (!existing) {
+    showMessage('找不到要完成的任务。', true);
+    return;
+  }
+
+  let localTask = state.tasks.find((task) => task.taskId === taskId);
+
+  if (!localTask) {
+    localTask = { ...existing };
+    state.tasks.push(localTask);
+  }
+
+  localTask.status = TASK_STATUSES.COMPLETED;
+  localTask.actualStart = segmentStart;
+  localTask.actualEnd = localNowString();
+  recalculate();
+  showMessage('任务已标记完成。下次同步时不会再创建新的未完成计划块。');
+}
+
+function handleAvailableBlockInput(event) {
+  const index = Number(event.target.dataset.blockIndex);
+  const field = event.target.dataset.blockField;
+
+  if (!Number.isInteger(index) || !field || !state.availableBlocks[index]) {
+    return;
+  }
+
+  state.availableBlocks[index][field] = event.target.value;
+  saveCurrentBlocksAsDefaults();
+  recalculate();
+}
+
+function handleAvailableBlockClick(event) {
+  const index = Number(event.target.dataset.removeBlockIndex);
+
+  if (!Number.isInteger(index) || !state.availableBlocks[index]) {
+    return;
+  }
+
+  state.availableBlocks.splice(index, 1);
+  saveCurrentBlocksAsDefaults();
+  renderAvailableBlocks();
+  recalculate();
+}
+
+function addAvailableBlock() {
+  state.availableBlocks.push({
+    start: '09:00',
+    end: '10:00',
+    context: CONTEXTS.ANY,
+    enabled: true
+  });
+  saveCurrentBlocksAsDefaults();
+  renderAvailableBlocks();
+  recalculate();
+}
+
+function handleScheduleClick(event) {
+  const taskId = event.target.dataset.completeTaskId;
+
+  if (!taskId) {
+    return;
+  }
+
+  completeTask(taskId, event.target.dataset.segmentStart);
+}
+
+function wireEvents() {
+  element('saveClientIdButton')?.addEventListener('click', saveClientId);
+  element('connectButton')?.addEventListener('click', connectGoogleCalendar);
+  element('loadCalendarButton')?.addEventListener('click', loadCalendar);
+  element('addDefaultBlocksButton')?.addEventListener('click', fillDefaultBlocks);
+  element('rescheduleButton')?.addEventListener('click', recalculate);
+  element('syncButton')?.addEventListener('click', syncSchedule);
+  element('addBlockButton')?.addEventListener('click', addAvailableBlock);
+  element('availableBlocks')?.addEventListener('input', handleAvailableBlockInput);
+  element('availableBlocks')?.addEventListener('change', handleAvailableBlockInput);
+  element('availableBlocks')?.addEventListener('click', handleAvailableBlockClick);
+  element('taskForm')?.addEventListener('submit', addTaskFromForm);
+  element('scheduleList')?.addEventListener('click', handleScheduleClick);
+  element('planDateInput')?.addEventListener('change', (event) => {
+    state.planDate = event.target.value || localDateString();
+    recalculate();
+  });
+}
+
+function populateInitialValues() {
+  const clientIdInput = element('clientIdInput');
+  const planDateInput = element('planDateInput');
+
+  if (clientIdInput) {
+    clientIdInput.value = state.settings.clientId;
+  }
+
+  if (planDateInput) {
+    planDateInput.value = state.planDate;
+  }
+}
+
+export function initApp() {
+  state = createState();
+  populateInitialValues();
+  renderTaskTypeOptions();
+  renderExecutionContextOptions();
+  renderAvailableBlocks();
+  wireEvents();
+  renderSchedule();
 }
