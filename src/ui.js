@@ -212,6 +212,10 @@ function existingPlanTasksFrom({ existingPlanTasks = [], planEvents = [] }) {
   ];
 }
 
+function matchingPlanDate(task, planDate) {
+  return task.planDate == null || task.planDate === planDate;
+}
+
 function sortablePlannedStart(task) {
   return task.plannedStart ?? task.fixedStart ?? task.segmentId ?? '';
 }
@@ -264,17 +268,22 @@ function markUsed(usedEventIds, eventId) {
 }
 
 export function mergePlanTasks({ calendarTasks = [], localTasks = [] }) {
-  const merged = new Map();
+  const merged = [];
+  const calendarTaskIds = new Set();
 
   for (const task of calendarTasks) {
-    merged.set(task.taskId, task);
+    merged.push(task);
+    calendarTaskIds.add(task.taskId);
   }
 
   for (const task of localTasks) {
-    const calendarTask = merged.get(task.taskId);
+    const calendarIndex = merged.findIndex((candidate) => (
+      candidate.calendarEventId && candidate.calendarEventId === task.calendarEventId
+    ));
+    const calendarTask = calendarIndex === -1 ? null : merged[calendarIndex];
 
-    if (!task.calendarEventId && !calendarTask) {
-      merged.set(task.taskId, task);
+    if (!task.calendarEventId && !calendarTaskIds.has(task.taskId)) {
+      merged.push(task);
       continue;
     }
 
@@ -282,11 +291,29 @@ export function mergePlanTasks({ calendarTasks = [], localTasks = [] }) {
       task.status === TASK_STATUSES.COMPLETED
         && calendarTask?.calendarEventId === task.calendarEventId
     ) {
-      merged.set(task.taskId, task);
+      merged[calendarIndex] = task;
     }
   }
 
-  return [...merged.values()];
+  return merged;
+}
+
+function emptySyncOperations() {
+  return {
+    creates: [],
+    updates: [],
+    deletes: []
+  };
+}
+
+export function resetCalendarStateForDateChange(currentState, newDate) {
+  return {
+    ...currentState,
+    planDate: newDate,
+    calendarEvents: [],
+    schedule: null,
+    lastSyncOperations: emptySyncOperations()
+  };
 }
 
 export function buildSyncOperations({
@@ -296,11 +323,7 @@ export function buildSyncOperations({
   existingPlanTasks = [],
   planEvents = []
 }) {
-  const result = {
-    creates: [],
-    updates: [],
-    deletes: []
-  };
+  const result = emptySyncOperations();
 
   if (!schedule || schedule.status === 'conflict') {
     return result;
@@ -316,7 +339,7 @@ export function buildSyncOperations({
   const allExistingPlanTasks = existingPlanTasksFrom({
     existingPlanTasks,
     planEvents
-  });
+  }).filter((task) => matchingPlanDate(task, planDate));
   const { bySegmentId, byTaskId } = existingPlanLookup(allExistingPlanTasks);
   const usedEventIds = new Set();
 
@@ -422,7 +445,7 @@ function createState() {
       .filter((block) => block.enabled)
       .map(blockFromSetting),
     schedule: null,
-    lastSyncOperations: { creates: [], updates: [], deletes: [] }
+    lastSyncOperations: emptySyncOperations()
   };
 }
 
@@ -880,7 +903,10 @@ function wireEvents() {
   element('taskForm')?.addEventListener('submit', addTaskFromForm);
   element('scheduleList')?.addEventListener('click', handleScheduleClick);
   element('planDateInput')?.addEventListener('change', (event) => {
-    state.planDate = event.target.value || localDateString();
+    state = resetCalendarStateForDateChange(
+      state,
+      event.target.value || localDateString()
+    );
     recalculate();
   });
 }

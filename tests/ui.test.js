@@ -6,7 +6,8 @@ import {
   buildSyncOperations,
   calendarEventToPlanTask,
   calendarEventToProtectedBlock,
-  mergePlanTasks
+  mergePlanTasks,
+  resetCalendarStateForDateChange
 } from '../src/ui.js';
 
 test('ordinary calendar events become protected blocks with local wall-clock timestamps', () => {
@@ -452,4 +453,104 @@ test('mergePlanTasks prefers calendar state except unsynced local completion awa
       status: TASK_STATUSES.PENDING
     }
   ]);
+});
+
+test('mergePlanTasks preserves split Calendar segments with the same task id', () => {
+  const merged = mergePlanTasks({
+    calendarTasks: [
+      {
+        taskId: 'split-calendar',
+        taskName: 'Split calendar',
+        status: TASK_STATUSES.SCHEDULED,
+        segmentId: 'split-calendar_segment_1',
+        calendarEventId: 'event-one',
+        plannedStart: '2026-07-06T09:00:00'
+      },
+      {
+        taskId: 'split-calendar',
+        taskName: 'Split calendar',
+        status: TASK_STATUSES.SCHEDULED,
+        segmentId: 'split-calendar_segment_2',
+        calendarEventId: 'event-two',
+        plannedStart: '2026-07-06T15:00:00'
+      }
+    ],
+    localTasks: [
+      {
+        taskId: 'split-calendar',
+        taskName: 'Unsynced duplicate local',
+        status: TASK_STATUSES.PENDING
+      }
+    ]
+  });
+
+  assert.deepEqual(
+    merged.map((task) => task.calendarEventId),
+    ['event-one', 'event-two']
+  );
+  assert.equal(merged.length, 2);
+});
+
+test('date change clears loaded calendar events but keeps local tasks', () => {
+  const currentState = {
+    planDate: '2026-07-06',
+    calendarEvents: [{ id: 'old-date-event' }],
+    tasks: [{ taskId: 'local-task', taskName: 'Local task' }],
+    schedule: { status: 'ok', segments: [] },
+    lastSyncOperations: {
+      creates: [{ eventId: 'create' }],
+      updates: [{ eventId: 'update' }],
+      deletes: [{ eventId: 'delete' }]
+    }
+  };
+
+  assert.deepEqual(resetCalendarStateForDateChange(currentState, '2026-07-07'), {
+    ...currentState,
+    planDate: '2026-07-07',
+    calendarEvents: [],
+    schedule: null,
+    lastSyncOperations: {
+      creates: [],
+      updates: [],
+      deletes: []
+    }
+  });
+  assert.deepEqual(currentState.calendarEvents, [{ id: 'old-date-event' }]);
+});
+
+test('sync operations ignore existing Plan tasks from a different plan date', () => {
+  const operations = buildSyncOperations({
+    schedule: {
+      status: 'ok',
+      segments: [
+        {
+          taskId: 'today-task',
+          taskName: 'Today task',
+          status: TASK_STATUSES.SCHEDULED,
+          start: '2026-07-07T09:00:00',
+          end: '2026-07-07T09:30:00'
+        }
+      ]
+    },
+    tasks: [
+      { taskId: 'today-task', taskName: 'Today task' }
+    ],
+    existingPlanTasks: [
+      {
+        taskId: 'today-task',
+        taskName: 'Yesterday task',
+        status: TASK_STATUSES.SCHEDULED,
+        planDate: '2026-07-06',
+        segmentId: 'today-task_segment_1',
+        plannedStart: '2026-07-06T09:00:00',
+        calendarEventId: 'event-yesterday'
+      }
+    ],
+    planDate: '2026-07-07'
+  });
+
+  assert.deepEqual(operations.updates, []);
+  assert.deepEqual(operations.deletes, []);
+  assert.equal(operations.creates.length, 1);
+  assert.equal(operations.creates[0].segment.taskId, 'today-task');
 });
