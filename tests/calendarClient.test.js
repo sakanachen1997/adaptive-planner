@@ -1,20 +1,25 @@
 import test, { afterEach } from 'node:test';
 import assert from 'node:assert/strict';
-import {
+import * as calendarClient from '../src/calendarClient.js';
+
+const {
   clearAccessToken,
   createPlanEvent,
   deletePlanEvent,
+  getLastAuthError,
   hasAccessToken,
   initGoogleAuth,
   listPrimaryEvents,
   requestAccessToken,
   revokeAccessToken,
   updatePlanEvent
-} from '../src/calendarClient.js';
+} = calendarClient;
 
 const CALENDAR_SCOPE = 'https://www.googleapis.com/auth/calendar.events';
+const realDateNow = Date.now;
 
 afterEach(() => {
+  Date.now = realDateNow;
   clearAccessToken();
   Reflect.deleteProperty(globalThis, 'fetch');
   Reflect.deleteProperty(globalThis, 'google');
@@ -51,8 +56,16 @@ function installFakeGoogle() {
 function authorize(token = 'access-token') {
   const googleState = installFakeGoogle();
   initGoogleAuth('client-123', () => {});
-  googleState.tokenConfig.callback({ access_token: token });
+  googleState.tokenConfig.callback({ access_token: token, expires_in: 3600 });
   return googleState;
+}
+
+function setNow(value) {
+  Date.now = () => value;
+}
+
+function resolvedTimeZone() {
+  return Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
 }
 
 function jsonResponse(body, status = 200) {
@@ -119,27 +132,92 @@ test('token callback stores access token and notifies caller', () => {
   initGoogleAuth('client-123', (response) => {
     tokenResponse = response;
   });
-  googleState.tokenConfig.callback({ access_token: 'token-123' });
+  googleState.tokenConfig.callback({ access_token: 'token-123', expires_in: 3600 });
 
   assert.equal(googleState.tokenConfig.client_id, 'client-123');
   assert.equal(googleState.tokenConfig.scope, CALENDAR_SCOPE);
   assert.equal('client_secret' in googleState.tokenConfig, false);
   assert.equal(hasAccessToken(), true);
-  assert.deepEqual(tokenResponse, { access_token: 'token-123' });
+  assert.deepEqual(tokenResponse, { access_token: 'token-123', expires_in: 3600 });
 
   requestAccessToken();
 
   assert.deepEqual(googleState.requestCalls, [{ prompt: '' }]);
 });
 
-test('token callback throws OAuth response errors', () => {
+test('token callback records OAuth response errors without throwing', () => {
   const googleState = installFakeGoogle();
+  let tokenResponse = null;
+
+  initGoogleAuth('client-123', (response) => {
+    tokenResponse = response;
+  });
+
+  assert.doesNotThrow(() => {
+    googleState.tokenConfig.callback({ error: 'access_denied' });
+  });
+
+  assert.equal(hasAccessToken(), false);
+  assert.equal(getLastAuthError().message, 'access_denied');
+  assert.deepEqual(tokenResponse, { error: 'access_denied' });
+});
+
+test('GIS error_callback records auth error without throwing', () => {
+  const googleState = authorize('token-before-popup-error');
+  let tokenResponse = null;
+
+  initGoogleAuth('client-123', (response) => {
+    tokenResponse = response;
+  });
+  googleState.tokenConfig.callback({ access_token: 'token-before-popup-error', expires_in: 3600 });
+
+  assert.doesNotThrow(() => {
+    googleState.tokenConfig.error_callback({ type: 'popup_closed' });
+  });
+
+  assert.equal(hasAccessToken(), false);
+  assert.equal(getLastAuthError().message, 'popup_closed');
+  assert.deepEqual(tokenResponse, { error: 'popup_closed' });
+});
+
+test('hasAccessToken becomes false after an expired token response', () => {
+  const googleState = installFakeGoogle();
+  setNow(1_000_000);
 
   initGoogleAuth('client-123', () => {});
+  googleState.tokenConfig.callback({ access_token: 'already-expired', expires_in: 30 });
 
-  assert.throws(() => {
-    googleState.tokenConfig.callback({ error: 'access_denied' });
-  }, /access_denied/);
+  assert.equal(hasAccessToken(), false);
+});
+
+test('listPrimaryEvents rejects after token expiry and clears stale token', async () => {
+  const googleState = installFakeGoogle();
+  setNow(1_000_000);
+  initGoogleAuth('client-123', () => {});
+  googleState.tokenConfig.callback({ access_token: 'short-lived', expires_in: 61 });
+  setNow(1_002_000);
+  const calls = installFakeFetch(jsonResponse({ items: [] }));
+
+  await assert.rejects(
+    () => listPrimaryEvents('2026-07-06', '2026-07-07'),
+    /access token/i
+  );
+  assert.equal(hasAccessToken(), false);
+  assert.equal(calls.length, 0);
+});
+
+test('initGoogleAuth clears previous token and auth error state', () => {
+  const googleState = installFakeGoogle();
+  initGoogleAuth('client-123', () => {});
+  googleState.tokenConfig.callback({ access_token: 'old-token', expires_in: 3600 });
+  googleState.tokenConfig.callback({ error: 'temporary_error' });
+
+  assert.equal(getLastAuthError().message, 'temporary_error');
+
+  initGoogleAuth('client-456', () => {});
+
+  assert.equal(hasAccessToken(), false);
+  assert.equal(getLastAuthError(), null);
 });
 
 test('revokeAccessToken revokes and clears the current access token', () => {
@@ -197,8 +275,8 @@ test('createPlanEvent posts a plan event body', async () => {
   assert.deepEqual(JSON.parse(calls[0].options.body), {
     summary: '[Plan] Deep work',
     description: 'Focus session',
-    start: { dateTime: '2026-07-06T09:00:00' },
-    end: { dateTime: '2026-07-06T10:30:00' }
+    start: { dateTime: '2026-07-06T09:00:00', timeZone: resolvedTimeZone() },
+    end: { dateTime: '2026-07-06T10:30:00', timeZone: resolvedTimeZone() }
   });
 });
 
@@ -219,8 +297,8 @@ test('updatePlanEvent patches an encoded event id', async () => {
   assert.deepEqual(JSON.parse(calls[0].options.body), {
     summary: '[Plan] Review',
     description: 'Updated',
-    start: { dateTime: '2026-07-06T09:00:00' },
-    end: { dateTime: '2026-07-06T10:30:00' }
+    start: { dateTime: '2026-07-06T09:00:00', timeZone: resolvedTimeZone() },
+    end: { dateTime: '2026-07-06T10:30:00', timeZone: resolvedTimeZone() }
   });
 });
 
