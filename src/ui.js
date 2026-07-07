@@ -15,6 +15,7 @@ import { combineDateAndTime, normalizeDateTime } from './time.js';
 import { loadSettings, saveSettings } from './storage.js';
 import {
   createPlanEvent,
+  deletePlanEvent,
   initGoogleAuth,
   listPrimaryEvents,
   requestAccessToken,
@@ -57,6 +58,10 @@ function toCalendarQueryDateTime(planDate, time) {
 
 function toTimeInputValue(value) {
   return String(value ?? '').slice(0, 5);
+}
+
+function timeFromDateTime(value) {
+  return normalizeDateTime(value).slice(11, 16);
 }
 
 function blockFromSetting(block) {
@@ -130,17 +135,41 @@ export function calendarEventToPlanTask(event) {
     return null;
   }
 
-  return {
+  const plannedStart = event?.start?.dateTime
+    ? normalizeDateTime(event.start.dateTime)
+    : null;
+  const plannedEnd = event?.end?.dateTime
+    ? normalizeDateTime(event.end.dateTime)
+    : null;
+  const task = {
     ...metadata,
+    plannedStart,
+    plannedEnd,
     calendarEventId: event.id ?? null
   };
+
+  if (
+    metadata.status === TASK_STATUSES.SCHEDULED
+      && plannedStart
+      && plannedEnd
+  ) {
+    task.fixed = true;
+    task.fixedStart = timeFromDateTime(plannedStart);
+    task.fixedEnd = timeFromDateTime(plannedEnd);
+  }
+
+  return task;
 }
 
-function segmentIdFor(segment) {
+function stableSegmentId(taskId, index) {
+  return `${taskId}_segment_${index + 1}`;
+}
+
+function legacySegmentIdFor(segment) {
   return `${segment.taskId}_${segment.start}_${segment.end}`;
 }
 
-function metadataForSegment(segment, task, planDate) {
+function metadataForSegment(segment, task, planDate, segmentId, status = TASK_STATUSES.SCHEDULED) {
   return {
     ...(task ?? {}),
     schemaVersion: 1,
@@ -148,12 +177,25 @@ function metadataForSegment(segment, task, planDate) {
     planDate,
     taskId: segment.taskId,
     taskName: segment.taskName,
-    segmentId: segmentIdFor(segment),
-    status: TASK_STATUSES.SCHEDULED
+    segmentId,
+    status
   };
 }
 
-function countScheduledSegmentsByTask(segments) {
+function indexesForScheduledSegments(segments) {
+  const seenByTask = new Map();
+  const indexes = new Map();
+
+  for (const segment of segments) {
+    const index = seenByTask.get(segment.taskId) ?? 0;
+    seenByTask.set(segment.taskId, index + 1);
+    indexes.set(segment, index);
+  }
+
+  return indexes;
+}
+
+function countsForSegmentsByTask(segments) {
   const counts = new Map();
 
   for (const segment of segments) {
@@ -170,16 +212,81 @@ function existingPlanTasksFrom({ existingPlanTasks = [], planEvents = [] }) {
   ];
 }
 
-function segmentEventIdMap(existingPlanTasks) {
-  const ids = new Map();
+function sortablePlannedStart(task) {
+  return task.plannedStart ?? task.fixedStart ?? task.segmentId ?? '';
+}
+
+function compareExistingPlanTasks(left, right) {
+  return sortablePlannedStart(left).localeCompare(sortablePlannedStart(right))
+    || String(left.calendarEventId ?? '').localeCompare(String(right.calendarEventId ?? ''));
+}
+
+function existingPlanLookup(existingPlanTasks) {
+  const bySegmentId = new Map();
+  const byTaskId = new Map();
 
   for (const task of existingPlanTasks) {
     if (task.segmentId && task.calendarEventId) {
-      ids.set(task.segmentId, task.calendarEventId);
+      bySegmentId.set(task.segmentId, task);
+    }
+
+    if (
+      task.taskId
+        && task.calendarEventId
+        && task.status !== TASK_STATUSES.COMPLETED
+    ) {
+      const matches = byTaskId.get(task.taskId) ?? [];
+      matches.push(task);
+      byTaskId.set(task.taskId, matches);
     }
   }
 
-  return ids;
+  for (const matches of byTaskId.values()) {
+    matches.sort(compareExistingPlanTasks);
+  }
+
+  return { bySegmentId, byTaskId };
+}
+
+function findExistingByEventId(existingPlanTasks, eventId) {
+  return existingPlanTasks.find((task) => task.calendarEventId === eventId) ?? null;
+}
+
+function unusedExistingForTask(byTaskId, taskId, usedEventIds) {
+  const candidates = byTaskId.get(taskId) ?? [];
+  return candidates.find((task) => !usedEventIds.has(task.calendarEventId)) ?? null;
+}
+
+function markUsed(usedEventIds, eventId) {
+  if (eventId) {
+    usedEventIds.add(eventId);
+  }
+}
+
+export function mergePlanTasks({ calendarTasks = [], localTasks = [] }) {
+  const merged = new Map();
+
+  for (const task of calendarTasks) {
+    merged.set(task.taskId, task);
+  }
+
+  for (const task of localTasks) {
+    const calendarTask = merged.get(task.taskId);
+
+    if (!task.calendarEventId && !calendarTask) {
+      merged.set(task.taskId, task);
+      continue;
+    }
+
+    if (
+      task.status === TASK_STATUSES.COMPLETED
+        && calendarTask?.calendarEventId === task.calendarEventId
+    ) {
+      merged.set(task.taskId, task);
+    }
+  }
+
+  return [...merged.values()];
 }
 
 export function buildSyncOperations({
@@ -191,7 +298,8 @@ export function buildSyncOperations({
 }) {
   const result = {
     creates: [],
-    updates: []
+    updates: [],
+    deletes: []
   };
 
   if (!schedule || schedule.status === 'conflict') {
@@ -200,39 +308,102 @@ export function buildSyncOperations({
 
   const scheduledSegments = (schedule.segments ?? [])
     .filter((segment) => segment.status === TASK_STATUSES.SCHEDULED);
+  const completedSegments = (schedule.segments ?? [])
+    .filter((segment) => segment.status === TASK_STATUSES.COMPLETED);
   const tasksById = new Map(tasks.map((task) => [task.taskId, task]));
-  const scheduledCountsByTask = countScheduledSegmentsByTask(scheduledSegments);
-  const existingBySegmentId = segmentEventIdMap(existingPlanTasksFrom({
+  const scheduledSegmentIndexes = indexesForScheduledSegments(scheduledSegments);
+  const scheduledCountsByTask = countsForSegmentsByTask(scheduledSegments);
+  const allExistingPlanTasks = existingPlanTasksFrom({
     existingPlanTasks,
     planEvents
-  }));
+  });
+  const { bySegmentId, byTaskId } = existingPlanLookup(allExistingPlanTasks);
+  const usedEventIds = new Set();
+
+  for (const segment of completedSegments) {
+    const task = tasksById.get(segment.taskId);
+
+    if (!task?.calendarEventId) {
+      continue;
+    }
+
+    const existing = findExistingByEventId(allExistingPlanTasks, task.calendarEventId);
+    const segmentId = task.segmentId
+      ?? existing?.segmentId
+      ?? stableSegmentId(segment.taskId, 0);
+    const completionTask = {
+      ...task,
+      actualStart: task.actualStart ?? segment.start,
+      actualEnd: task.actualEnd ?? segment.end
+    };
+    const metadata = metadataForSegment(
+      segment,
+      completionTask,
+      planDate,
+      segmentId,
+      TASK_STATUSES.COMPLETED
+    );
+    const description = buildDescription('由 Adaptive Planner 创建。', metadata);
+
+    result.updates.push({
+      segment,
+      task: completionTask,
+      description,
+      eventId: task.calendarEventId
+    });
+    markUsed(usedEventIds, task.calendarEventId);
+  }
 
   for (const segment of scheduledSegments) {
     const task = tasksById.get(segment.taskId) ?? {
       taskId: segment.taskId,
       taskName: segment.taskName
     };
-    const metadata = metadataForSegment(segment, task, planDate);
+    const segmentIndex = scheduledSegmentIndexes.get(segment) ?? 0;
+    const segmentId = stableSegmentId(segment.taskId, segmentIndex);
+    const legacySegmentId = legacySegmentIdFor(segment);
+    const exactExisting = bySegmentId.get(segmentId)
+      ?? bySegmentId.get(legacySegmentId);
+    const fallbackExisting = exactExisting?.calendarEventId
+      && !usedEventIds.has(exactExisting.calendarEventId)
+      ? exactExisting
+      : unusedExistingForTask(byTaskId, segment.taskId, usedEventIds);
+    const metadata = metadataForSegment(segment, task, planDate, segmentId);
     const description = buildDescription('由 Adaptive Planner 创建。', metadata);
     const operation = {
       segment,
       task,
       description
     };
-    const eventId = existingBySegmentId.get(metadata.segmentId)
-      ?? (
-        scheduledCountsByTask.get(segment.taskId) === 1
-          ? task.calendarEventId
-          : null
-      );
+    const taskLevelEventId = scheduledCountsByTask.get(segment.taskId) === 1
+      && task.calendarEventId
+      && !usedEventIds.has(task.calendarEventId)
+      ? task.calendarEventId
+      : null;
+    const eventId = fallbackExisting?.calendarEventId
+      ?? taskLevelEventId;
 
     if (eventId) {
+      markUsed(usedEventIds, eventId);
       result.updates.push({
         ...operation,
         eventId
       });
     } else {
       result.creates.push(operation);
+    }
+  }
+
+  for (const task of allExistingPlanTasks) {
+    if (
+      task.calendarEventId
+        && task.status !== TASK_STATUSES.COMPLETED
+        && !usedEventIds.has(task.calendarEventId)
+    ) {
+      result.deletes.push({
+        eventId: task.calendarEventId,
+        task
+      });
     }
   }
 
@@ -251,7 +422,7 @@ function createState() {
       .filter((block) => block.enabled)
       .map(blockFromSetting),
     schedule: null,
-    lastSyncOperations: { creates: [], updates: [] }
+    lastSyncOperations: { creates: [], updates: [], deletes: [] }
   };
 }
 
@@ -270,17 +441,10 @@ function protectedBlocksFromCalendar() {
 }
 
 function allTasks() {
-  const merged = new Map();
-
-  for (const task of planTasksFromCalendar()) {
-    merged.set(task.taskId, task);
-  }
-
-  for (const task of state.tasks) {
-    merged.set(task.taskId, task);
-  }
-
-  return [...merged.values()];
+  return mergePlanTasks({
+    calendarTasks: planTasksFromCalendar(),
+    localTasks: state.tasks
+  });
 }
 
 function concreteAvailableBlocks() {
@@ -503,7 +667,7 @@ function renderSyncPreview() {
     planDate: state.planDate
   });
 
-  target.textContent = `同步预览：将创建 ${state.lastSyncOperations.creates.length} 个，更新 ${state.lastSyncOperations.updates.length} 个。`;
+  target.textContent = `同步预览：将创建 ${state.lastSyncOperations.creates.length} 个，更新 ${state.lastSyncOperations.updates.length} 个，删除 ${state.lastSyncOperations.deletes.length} 个。`;
   target.className = 'muted';
 }
 
@@ -580,15 +744,19 @@ async function syncSchedule() {
   });
 
   try {
-    for (const operation of operations.creates) {
-      await createPlanEvent(operation.segment, operation.description);
-    }
-
     for (const operation of operations.updates) {
       await updatePlanEvent(operation.eventId, operation.segment, operation.description);
     }
 
-    showMessage(`同步完成：创建 ${operations.creates.length} 个，更新 ${operations.updates.length} 个。`);
+    for (const operation of operations.creates) {
+      await createPlanEvent(operation.segment, operation.description);
+    }
+
+    for (const operation of operations.deletes) {
+      await deletePlanEvent(operation.eventId);
+    }
+
+    showMessage(`同步完成：创建 ${operations.creates.length} 个，更新 ${operations.updates.length} 个，删除 ${operations.deletes.length} 个。`);
     await loadCalendar();
   } catch (error) {
     showMessage(`同步失败：${error.message}`, true);

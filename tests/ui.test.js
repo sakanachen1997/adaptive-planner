@@ -1,11 +1,12 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { APP_ID, TASK_STATUSES } from '../src/models.js';
-import { buildDescription } from '../src/metadata.js';
+import { buildDescription, extractPlanMetadata } from '../src/metadata.js';
 import {
   buildSyncOperations,
   calendarEventToPlanTask,
-  calendarEventToProtectedBlock
+  calendarEventToProtectedBlock,
+  mergePlanTasks
 } from '../src/ui.js';
 
 test('ordinary calendar events become protected blocks with local wall-clock timestamps', () => {
@@ -45,15 +46,49 @@ test('plan calendar events become tasks and retain their calendar event id', () 
 
   assert.deepEqual(calendarEventToPlanTask(event), {
     ...metadata,
+    plannedStart: '2026-07-06T09:00:00',
+    plannedEnd: '2026-07-06T10:00:00',
+    fixed: true,
+    fixedStart: '09:00',
+    fixedEnd: '10:00',
     calendarEventId: 'event-1'
   });
+});
+
+test('calendarEventToPlanTask uses Calendar event time as fixed planned time for scheduled metadata', () => {
+  const metadata = {
+    schemaVersion: 1,
+    app: APP_ID,
+    taskId: 'dragged-task',
+    segmentId: 'dragged-task_segment_1',
+    taskName: 'Dragged task',
+    taskType: 'custom',
+    desiredMinutes: 60,
+    minimumMinutes: 30,
+    importance: 4,
+    status: TASK_STATUSES.SCHEDULED
+  };
+  const task = calendarEventToPlanTask({
+    id: 'event-dragged',
+    description: buildDescription('Dragged in Calendar', metadata),
+    start: { dateTime: '2026-07-06T14:15:00+02:00' },
+    end: { dateTime: '2026-07-06T15:45:00+02:00' }
+  });
+
+  assert.equal(task.plannedStart, '2026-07-06T14:15:00');
+  assert.equal(task.plannedEnd, '2026-07-06T15:45:00');
+  assert.equal(task.fixed, true);
+  assert.equal(task.fixedStart, '14:15');
+  assert.equal(task.fixedEnd, '15:45');
+  assert.equal(task.segmentId, 'dragged-task_segment_1');
+  assert.equal(task.calendarEventId, 'event-dragged');
 });
 
 test('sync operations create or update only scheduled non-completed plan segments', () => {
   const tasks = [
     { taskId: 'new-task', taskName: 'New task' },
     { taskId: 'existing-task', taskName: 'Existing task', calendarEventId: 'event-2' },
-    { taskId: 'done-task', taskName: 'Done task', calendarEventId: 'event-3' }
+    { taskId: 'done-task', taskName: 'Done task' }
   ];
   const schedule = {
     status: 'ok',
@@ -92,7 +127,81 @@ test('sync operations create or update only scheduled non-completed plan segment
   assert.equal(operations.creates[0].segment.taskId, 'new-task');
   assert.equal(operations.updates.length, 1);
   assert.equal(operations.updates[0].eventId, 'event-2');
+  assert.deepEqual(operations.deletes, []);
   assert.match(operations.updates[0].description, /PLAN_META/);
+});
+
+test('sync operations include completed update and do not create completed events', () => {
+  const schedule = {
+    status: 'ok',
+    segments: [
+      {
+        taskId: 'done-existing',
+        taskName: 'Done existing',
+        status: TASK_STATUSES.COMPLETED,
+        start: '2026-07-06T08:05:00',
+        end: '2026-07-06T08:42:00'
+      },
+      {
+        taskId: 'done-local',
+        taskName: 'Done local',
+        status: TASK_STATUSES.COMPLETED,
+        start: '2026-07-06T09:00:00',
+        end: '2026-07-06T09:15:00'
+      }
+    ]
+  };
+
+  const operations = buildSyncOperations({
+    schedule,
+    tasks: [
+      {
+        taskId: 'done-existing',
+        taskName: 'Done existing',
+        calendarEventId: 'event-done',
+        actualStart: '2026-07-06T08:05:00',
+        actualEnd: '2026-07-06T08:42:00'
+      },
+      {
+        taskId: 'done-local',
+        taskName: 'Done local',
+        actualStart: '2026-07-06T09:00:00',
+        actualEnd: '2026-07-06T09:15:00'
+      }
+    ],
+    existingPlanTasks: [
+      {
+        taskId: 'done-existing',
+        taskName: 'Done existing',
+        calendarEventId: 'event-done',
+        segmentId: 'done-existing_segment_1'
+      }
+    ],
+    planDate: '2026-07-06'
+  });
+
+  assert.deepEqual(operations.creates, []);
+  assert.equal(operations.updates.length, 1);
+  assert.equal(operations.updates[0].eventId, 'event-done');
+  assert.deepEqual(operations.updates[0].segment, {
+    taskId: 'done-existing',
+    taskName: 'Done existing',
+    status: TASK_STATUSES.COMPLETED,
+    start: '2026-07-06T08:05:00',
+    end: '2026-07-06T08:42:00'
+  });
+  assert.deepEqual(extractPlanMetadata(operations.updates[0].description), {
+    taskId: 'done-existing',
+    taskName: 'Done existing',
+    calendarEventId: 'event-done',
+    actualStart: '2026-07-06T08:05:00',
+    actualEnd: '2026-07-06T08:42:00',
+    schemaVersion: 1,
+    app: APP_ID,
+    planDate: '2026-07-06',
+    segmentId: 'done-existing_segment_1',
+    status: TASK_STATUSES.COMPLETED
+  });
 });
 
 test('sync operations ignore skipped and pending segments', () => {
@@ -183,4 +292,164 @@ test('sync operations update split existing segments by segment id for the same 
     operations.updates.map((operation) => operation.eventId),
     ['event-morning', 'event-afternoon']
   );
+});
+
+test('split reschedule with changed times updates existing same-task Plan events instead of creating duplicates', () => {
+  const task = {
+    taskId: 'split-reschedule',
+    taskName: 'Split reschedule'
+  };
+  const operations = buildSyncOperations({
+    schedule: {
+      status: 'ok',
+      segments: [
+        {
+          taskId: 'split-reschedule',
+          taskName: 'Split reschedule',
+          status: TASK_STATUSES.SCHEDULED,
+          start: '2026-07-06T10:00:00',
+          end: '2026-07-06T10:30:00'
+        },
+        {
+          taskId: 'split-reschedule',
+          taskName: 'Split reschedule',
+          status: TASK_STATUSES.SCHEDULED,
+          start: '2026-07-06T16:00:00',
+          end: '2026-07-06T16:30:00'
+        }
+      ]
+    },
+    tasks: [task],
+    existingPlanTasks: [
+      {
+        ...task,
+        segmentId: 'split-reschedule_2026-07-06T09:00:00_2026-07-06T09:30:00',
+        plannedStart: '2026-07-06T09:00:00',
+        calendarEventId: 'event-old-morning'
+      },
+      {
+        ...task,
+        segmentId: 'split-reschedule_2026-07-06T15:00:00_2026-07-06T15:30:00',
+        plannedStart: '2026-07-06T15:00:00',
+        calendarEventId: 'event-old-afternoon'
+      }
+    ],
+    planDate: '2026-07-06'
+  });
+
+  assert.deepEqual(operations.creates, []);
+  assert.deepEqual(
+    operations.updates.map((operation) => operation.eventId),
+    ['event-old-morning', 'event-old-afternoon']
+  );
+  assert.deepEqual(operations.deletes, []);
+});
+
+test('stale unmatched existing Plan event appears in deletes', () => {
+  const operations = buildSyncOperations({
+    schedule: {
+      status: 'ok',
+      segments: [
+        {
+          taskId: 'current-task',
+          taskName: 'Current task',
+          status: TASK_STATUSES.SCHEDULED,
+          start: '2026-07-06T09:00:00',
+          end: '2026-07-06T09:30:00'
+        }
+      ]
+    },
+    tasks: [
+      { taskId: 'current-task', taskName: 'Current task' }
+    ],
+    existingPlanTasks: [
+      {
+        taskId: 'stale-task',
+        taskName: 'Stale task',
+        status: TASK_STATUSES.SCHEDULED,
+        segmentId: 'stale-task_segment_1',
+        plannedStart: '2026-07-06T12:00:00',
+        calendarEventId: 'event-stale'
+      }
+    ],
+    planDate: '2026-07-06'
+  });
+
+  assert.deepEqual(operations.deletes, [{
+    eventId: 'event-stale',
+    task: {
+      taskId: 'stale-task',
+      taskName: 'Stale task',
+      status: TASK_STATUSES.SCHEDULED,
+      segmentId: 'stale-task_segment_1',
+      plannedStart: '2026-07-06T12:00:00',
+      calendarEventId: 'event-stale'
+    }
+  }]);
+});
+
+test('mergePlanTasks prefers calendar state except unsynced local completion awaiting sync', () => {
+  const merged = mergePlanTasks({
+    calendarTasks: [
+      {
+        taskId: 'stale-scheduled',
+        taskName: 'Calendar scheduled',
+        status: TASK_STATUSES.SCHEDULED,
+        calendarEventId: 'event-scheduled',
+        plannedStart: '2026-07-06T10:00:00'
+      },
+      {
+        taskId: 'completed-waiting',
+        taskName: 'Calendar old scheduled',
+        status: TASK_STATUSES.SCHEDULED,
+        calendarEventId: 'event-completed',
+        plannedStart: '2026-07-06T11:00:00'
+      }
+    ],
+    localTasks: [
+      {
+        taskId: 'stale-scheduled',
+        taskName: 'Local stale scheduled',
+        status: TASK_STATUSES.SCHEDULED,
+        calendarEventId: 'event-scheduled',
+        plannedStart: '2026-07-06T09:00:00'
+      },
+      {
+        taskId: 'completed-waiting',
+        taskName: 'Local completed',
+        status: TASK_STATUSES.COMPLETED,
+        calendarEventId: 'event-completed',
+        actualStart: '2026-07-06T11:00:00',
+        actualEnd: '2026-07-06T11:20:00'
+      },
+      {
+        taskId: 'local-new',
+        taskName: 'Local new',
+        status: TASK_STATUSES.PENDING
+      }
+    ]
+  });
+
+  assert.deepEqual(merged, [
+    {
+      taskId: 'stale-scheduled',
+      taskName: 'Calendar scheduled',
+      status: TASK_STATUSES.SCHEDULED,
+      calendarEventId: 'event-scheduled',
+      plannedStart: '2026-07-06T10:00:00'
+    },
+    {
+      taskId: 'completed-waiting',
+      taskName: 'Local completed',
+      status: TASK_STATUSES.COMPLETED,
+      calendarEventId: 'event-completed',
+      actualStart: '2026-07-06T11:00:00',
+      actualEnd: '2026-07-06T11:20:00'
+    },
+    {
+      taskId: 'local-new',
+      taskName: 'Local new',
+      status: TASK_STATUSES.PENDING
+    }
+  ]);
 });
