@@ -55,6 +55,47 @@ https://www.googleapis.com/auth/calendar.events
 5. 将生成的站点来源添加到 Google OAuth 的 Authorized JavaScript origins 中。
 6. 使用 GitHub Pages 地址打开应用，并在应用中保存 OAuth Client ID。
 
+## GitLab Pages 部署
+
+项目已包含 `.gitlab-ci.yml`。推送到 GitLab 后，默认分支会自动执行：
+
+1. 使用 Node.js 运行 `npm test`。
+2. 将 `index.html` 和 `src/` 复制到 `public/`。
+3. 通过 GitLab Pages 发布静态站点。
+
+部署步骤：
+
+1. 在 GitLab 创建一个仓库。
+2. 将本项目推送到该仓库的默认分支。
+3. 等待 GitLab CI/CD pipeline 完成。
+4. 在 GitLab 项目中打开 Deploy -> Pages 查看站点地址。
+
+普通项目的 Pages 地址通常是：
+
+```text
+https://<namespace>.gitlab.io/<project-name>/
+```
+
+如果你想使用根域名形式：
+
+```text
+https://<username>.gitlab.io/
+```
+
+GitLab 项目名需要是：
+
+```text
+<username>.gitlab.io
+```
+
+部署到 GitLab Pages 后，也要把对应 origin 加到 Google OAuth 的 Authorized JavaScript origins。普通项目示例：
+
+```text
+https://<namespace>.gitlab.io
+```
+
+注意这里只填写 origin，不包含 `/<project-name>/` 路径。
+
 ## 数据安全
 
 任务名称可能会同步到 Google Calendar 事件中。涉及敏感公司项目、客户名称、内部代号或个人隐私时，建议避免填写真实名称，或先进行匿名化处理。
