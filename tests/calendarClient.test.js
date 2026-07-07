@@ -220,6 +220,34 @@ test('initGoogleAuth clears previous token and auth error state', () => {
   assert.equal(getLastAuthError(), null);
 });
 
+test('initGoogleAuth with missing client ID clears previous token and token client before throwing', () => {
+  const googleState = authorize('token-before-missing-client-id');
+
+  assert.equal(hasAccessToken(), true);
+  requestAccessToken();
+  assert.deepEqual(googleState.requestCalls, [{ prompt: '' }]);
+
+  assert.throws(() => initGoogleAuth('', () => {}), /client id/i);
+
+  assert.equal(hasAccessToken(), false);
+  assert.throws(() => requestAccessToken(), /not initialized/i);
+});
+
+test('initGoogleAuth with unavailable GIS clears previous token and token client before throwing', () => {
+  const googleState = authorize('token-before-missing-gis');
+
+  assert.equal(hasAccessToken(), true);
+  requestAccessToken();
+  assert.deepEqual(googleState.requestCalls, [{ prompt: '' }]);
+
+  Reflect.deleteProperty(globalThis, 'google');
+
+  assert.throws(() => initGoogleAuth('client-123', () => {}), /google identity/i);
+
+  assert.equal(hasAccessToken(), false);
+  assert.throws(() => requestAccessToken(), /not initialized/i);
+});
+
 test('revokeAccessToken revokes and clears the current access token', () => {
   const googleState = authorize('token-to-revoke');
 

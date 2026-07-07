@@ -37,6 +37,7 @@ function getOAuth2() {
 function clearAuthState() {
   clearAccessToken();
   lastAuthError = null;
+  tokenClient = null;
 }
 
 function recordAuthError(message) {
@@ -76,6 +77,8 @@ function storeAccessToken(response) {
 }
 
 export function initGoogleAuth(clientId, onToken) {
+  clearAuthState();
+
   if (!clientId) {
     throw new Error('Google OAuth client ID is required');
   }
@@ -84,8 +87,6 @@ export function initGoogleAuth(clientId, onToken) {
   if (!oauth2?.initTokenClient) {
     throw new Error('Google identity services are unavailable');
   }
-
-  clearAuthState();
 
   tokenClient = oauth2.initTokenClient({
     client_id: clientId,
