@@ -349,6 +349,21 @@ export function upsertLocalTask(tasks, editedTask) {
   ];
 }
 
+export function shouldOfferCompression(schedule) {
+  return schedule?.status === 'conflict'
+    && schedule.conflict?.kind === 'desired_overflow'
+    && schedule.conflict?.compressionAvailable === true;
+}
+
+export function shouldShowRecoveryActions(schedule) {
+  return schedule?.status === 'conflict'
+    && schedule.conflict?.kind === 'compressed_below_minimum';
+}
+
+export function compressionAllocationForTask(schedule, taskId) {
+  return schedule?.compression?.allocations?.find((item) => item.taskId === taskId) ?? null;
+}
+
 function sameDateTime(left, right) {
   return Boolean(left && right) && normalizeDateTime(left) === normalizeDateTime(right);
 }
@@ -618,7 +633,8 @@ function createState() {
       .map(blockFromSetting),
     schedule: null,
     lastSyncOperations: emptySyncOperations(),
-    editingTaskKey: null
+    editingTaskKey: null,
+    proportionalCompression: false
   };
 }
 
@@ -764,17 +780,52 @@ function renderConflictPanel() {
   panel.className = 'conflict';
   clear(panel);
   appendText(panel, '计划冲突', 'strong');
-  appendText(
-    panel,
-    `可用时间 ${state.schedule.conflict.availableMinutes} 分钟，任务最小需要 ${state.schedule.conflict.requiredMinimumMinutes} 分钟。`,
-    'p'
-  );
 
-  const list = document.createElement('ol');
-  for (const action of state.schedule.conflict.actions) {
-    appendText(list, action, 'li');
+  if (shouldOfferCompression(state.schedule)) {
+    appendText(
+      panel,
+      `想要时长 ${state.schedule.conflict.desiredMinutes} 分钟，可用时间 ${state.schedule.conflict.availableMinutes} 分钟。`,
+      'p'
+    );
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.textContent = '一键按比例压缩';
+    button.dataset.compressPlan = 'true';
+    panel.append(button);
+    return;
   }
-  panel.append(list);
+
+  if (shouldShowRecoveryActions(state.schedule)) {
+    appendText(
+      panel,
+      `按比例压缩后，有任务会低于最小时长。可用时间 ${state.schedule.conflict.availableMinutes} 分钟，想要时长 ${state.schedule.conflict.desiredMinutes} 分钟。`,
+      'p'
+    );
+
+    const shortList = document.createElement('ul');
+    for (const item of state.schedule.conflict.belowMinimum ?? []) {
+      appendText(
+        shortList,
+        `${item.taskName}：压缩后 ${item.allocatedMinutes} 分钟，最小需要 ${item.minimumMinutes} 分钟`,
+        'li'
+      );
+    }
+    panel.append(shortList);
+  } else {
+    appendText(
+      panel,
+      `可用时间 ${state.schedule.conflict.availableMinutes} 分钟，任务最小需要 ${state.schedule.conflict.requiredMinimumMinutes} 分钟。`,
+      'p'
+    );
+  }
+
+  if (state.schedule.conflict.actions?.length) {
+    const list = document.createElement('ol');
+    for (const action of state.schedule.conflict.actions) {
+      appendText(list, action, 'li');
+    }
+    panel.append(list);
+  }
 }
 
 function appendEditButton(parent, task) {
@@ -834,16 +885,30 @@ function renderSchedule() {
     appendText(root, '当前没有可显示的计划块。', 'p');
   }
 
+  if (state.schedule.compression) {
+    const summary = document.createElement('div');
+    summary.className = 'schedule-item compressed';
+    appendText(summary, '已按比例压缩', 'strong');
+    appendText(
+      summary,
+      `想要总时长 ${state.schedule.compression.desiredMinutes} 分钟，压缩到可用时间 ${state.schedule.compression.availableMinutes} 分钟。`,
+      'div'
+    ).className = 'muted';
+    root.append(summary);
+  }
+
   for (const segment of state.schedule.segments ?? []) {
     const item = document.createElement('div');
     item.className = `schedule-item ${segment.status === TASK_STATUSES.COMPLETED ? 'completed' : ''}`;
     const matchedTask = findTaskForSegment(segment, candidatesByTaskId);
+    const compressed = compressionAllocationForTask(state.schedule, segment.taskId);
 
     appendText(item, segment.taskName, 'strong');
     appendText(
       item,
       `${segment.start.slice(11, 16)} - ${segment.end.slice(11, 16)}`
-        + (segment.allocatedMinutes ? `，${segment.allocatedMinutes} 分钟` : ''),
+        + (segment.allocatedMinutes ? `，${segment.allocatedMinutes} 分钟` : '')
+        + (compressed ? `（原想要 ${compressed.desiredMinutes} 分钟 -> 压缩后 ${compressed.allocatedMinutes} 分钟）` : ''),
       'div'
     ).className = 'muted';
 
@@ -930,9 +995,21 @@ function recalculate() {
     now: localNowString(),
     availableBlocks: concreteAvailableBlocks(),
     protectedBlocks: protectedBlocksFromCalendar(),
-    tasks: allTasks()
+    tasks: allTasks(),
+    allocationMode: state.proportionalCompression ? 'proportional' : 'weighted',
+    requireCompressionConfirmation: !state.proportionalCompression
   });
   renderSchedule();
+}
+
+function recalculateWithoutCompression() {
+  state.proportionalCompression = false;
+  recalculate();
+}
+
+function compressProportionally() {
+  state.proportionalCompression = true;
+  recalculate();
 }
 
 function fillDefaultBlocks() {
@@ -1242,12 +1319,18 @@ function handleScheduleClick(event) {
   });
 }
 
+function handleConflictClick(event) {
+  if (event.target.dataset.compressPlan) {
+    compressProportionally();
+  }
+}
+
 function wireEvents() {
   element('saveClientIdButton')?.addEventListener('click', saveClientId);
   element('connectButton')?.addEventListener('click', connectGoogleCalendar);
   element('loadCalendarButton')?.addEventListener('click', loadCalendar);
   element('addDefaultBlocksButton')?.addEventListener('click', fillDefaultBlocks);
-  element('rescheduleButton')?.addEventListener('click', recalculate);
+  element('rescheduleButton')?.addEventListener('click', recalculateWithoutCompression);
   element('syncButton')?.addEventListener('click', syncSchedule);
   element('addBlockButton')?.addEventListener('click', addAvailableBlock);
   element('availableBlocks')?.addEventListener('input', handleAvailableBlockInput);
@@ -1255,12 +1338,14 @@ function wireEvents() {
   element('availableBlocks')?.addEventListener('click', handleAvailableBlockClick);
   element('taskForm')?.addEventListener('submit', submitTaskForm);
   element('cancelEditTaskButton')?.addEventListener('click', resetTaskForm);
+  element('conflictPanel')?.addEventListener('click', handleConflictClick);
   element('scheduleList')?.addEventListener('click', handleScheduleClick);
   element('planDateInput')?.addEventListener('change', (event) => {
     state = resetCalendarStateForDateChange(
       state,
       event.target.value || localDateString()
     );
+    state.proportionalCompression = false;
     resetTaskForm();
     recalculate();
   });

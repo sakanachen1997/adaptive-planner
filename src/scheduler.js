@@ -194,6 +194,72 @@ function allocateDurations(tasks, capacityMinutes, now) {
   return new Map(weightedTasks.map(({ task, duration }) => [task.taskId, duration]));
 }
 
+function compressionSummary(tasks, allocations, availableMinutes) {
+  const desiredMinutes = tasks.reduce((sum, task) => sum + task.effectiveDesiredMinutes, 0);
+
+  return {
+    desiredMinutes,
+    availableMinutes,
+    allocations: tasks.map((task) => ({
+      taskId: task.taskId,
+      taskName: task.taskName,
+      desiredMinutes: task.effectiveDesiredMinutes,
+      minimumMinutes: task.effectiveMinimumMinutes,
+      allocatedMinutes: allocations.get(task.taskId) ?? 0
+    }))
+  };
+}
+
+function allocateProportionalDurations(tasks, capacityMinutes, now) {
+  const desiredTotal = tasks.reduce((sum, task) => sum + task.effectiveDesiredMinutes, 0);
+  const weightedTasks = tasks.map((task) => ({
+    task,
+    duration: 0,
+    fraction: 0,
+    priority: calculatePriority(task, now)
+  }));
+
+  if (desiredTotal <= 0 || capacityMinutes <= 0) {
+    return new Map(weightedTasks.map(({ task }) => [task.taskId, 0]));
+  }
+
+  let distributed = 0;
+
+  for (const item of weightedTasks) {
+    const exact = (item.task.effectiveDesiredMinutes / desiredTotal) * capacityMinutes;
+    item.duration = Math.floor(exact);
+    item.fraction = exact - item.duration;
+    distributed += item.duration;
+  }
+
+  let leftover = capacityMinutes - distributed;
+
+  while (leftover > 0) {
+    const candidates = weightedTasks
+      .filter((item) => item.duration < item.task.effectiveDesiredMinutes)
+      .sort((left, right) => (
+        right.fraction - left.fraction
+          || right.priority - left.priority
+          || left.task.taskName.localeCompare(right.task.taskName)
+      ));
+
+    if (candidates.length === 0) {
+      break;
+    }
+
+    for (const item of candidates) {
+      if (leftover <= 0) {
+        break;
+      }
+
+      item.duration += 1;
+      leftover -= 1;
+    }
+  }
+
+  return new Map(weightedTasks.map(({ task, duration }) => [task.taskId, duration]));
+}
+
 function segmentForTask(task, start, minutes) {
   return {
     taskId: task.taskId,
@@ -326,15 +392,33 @@ function sortSegments(segments) {
   ));
 }
 
-function conflictResult(planDate, completed, availableMinutes, requiredMinimumMinutes) {
+function conflictResult(
+  planDate,
+  completed,
+  availableMinutes,
+  requiredMinimumMinutes,
+  {
+    kind = 'minimum_overflow',
+    desiredMinutes = null,
+    compressionAvailable = false,
+    compression = null,
+    belowMinimum = [],
+    actions = [...CONFLICT_ACTIONS]
+  } = {}
+) {
   return {
     status: 'conflict',
     planDate,
     segments: sortSegments(completed),
     conflict: {
+      kind,
       availableMinutes,
       requiredMinimumMinutes,
-      actions: [...CONFLICT_ACTIONS]
+      desiredMinutes,
+      compressionAvailable,
+      compression,
+      belowMinimum,
+      actions
     }
   };
 }
@@ -344,7 +428,9 @@ export function scheduleDay({
   now,
   availableBlocks = [],
   protectedBlocks = [],
-  tasks = []
+  tasks = [],
+  allocationMode = 'weighted',
+  requireCompressionConfirmation = false
 }) {
   const completed = completedSegments(tasks);
   const active = activeTasks(tasks).map((task) => taskWithEffectiveWork(task, planDate, now));
@@ -356,15 +442,50 @@ export function scheduleDay({
   const requiredMinimumMinutes = active.reduce((sum, task) => (
     sum + task.effectiveMinimumMinutes
   ), 0);
+  const desiredMinutes = active.reduce((sum, task) => (
+    sum + task.effectiveDesiredMinutes
+  ), 0);
 
-  if (requiredMinimumMinutes > availableMinutes) {
-    return conflictResult(planDate, completed, availableMinutes, requiredMinimumMinutes);
+  if (
+    requireCompressionConfirmation
+      && allocationMode !== 'proportional'
+      && desiredMinutes > availableMinutes
+  ) {
+    return conflictResult(planDate, completed, availableMinutes, requiredMinimumMinutes, {
+      kind: 'desired_overflow',
+      desiredMinutes,
+      compressionAvailable: true,
+      actions: []
+    });
   }
 
   const schedulableTasks = active.filter((task) => (
     task.effectiveDesiredMinutes > 0 || fixedFutureInterval(task, planDate, now)
   ));
-  const allocations = allocateDurations(schedulableTasks, availableMinutes, now);
+  const allocations = allocationMode === 'proportional'
+    ? allocateProportionalDurations(schedulableTasks, availableMinutes, now)
+    : allocateDurations(schedulableTasks, availableMinutes, now);
+  const compression = allocationMode === 'proportional'
+    ? compressionSummary(schedulableTasks, allocations, availableMinutes)
+    : null;
+  const belowMinimum = compression?.allocations.filter((item) => (
+    item.allocatedMinutes < item.minimumMinutes
+  )) ?? [];
+
+  if (belowMinimum.length > 0) {
+    return conflictResult(planDate, completed, availableMinutes, requiredMinimumMinutes, {
+      kind: 'compressed_below_minimum',
+      desiredMinutes,
+      compression,
+      belowMinimum,
+      actions: [...CONFLICT_ACTIONS]
+    });
+  }
+
+  if (requiredMinimumMinutes > availableMinutes) {
+    return conflictResult(planDate, completed, availableMinutes, requiredMinimumMinutes);
+  }
+
   let blocks = available.map((block) => ({ ...block }));
   const orderedTasks = [...schedulableTasks].sort(priorityDescending(now));
   const fixedTasks = orderedTasks.filter((task) => task.fixed && task.fixedStart && task.fixedEnd);
@@ -422,6 +543,7 @@ export function scheduleDay({
     status: unscheduled.length > 0 ? 'partial' : 'ok',
     planDate,
     segments: sortSegments([...completed, ...scheduled]),
-    unscheduled
+    unscheduled,
+    compression
   };
 }

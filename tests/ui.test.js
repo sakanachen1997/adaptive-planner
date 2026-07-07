@@ -6,8 +6,11 @@ import {
   buildSyncOperations,
   calendarEventToPlanTask,
   calendarEventToProtectedBlock,
+  compressionAllocationForTask,
   editableTasksForSchedule,
   formInputForTask,
+  shouldOfferCompression,
+  shouldShowRecoveryActions,
   mergePlanTasks,
   resetCalendarStateForDateChange,
   selectTaskForCompletion,
@@ -107,6 +110,53 @@ test('mergePlanTasks prefers edited local copy of a Calendar plan task', () => {
 
   assert.equal(merged.length, 1);
   assert.equal(merged[0].taskName, 'Edited version');
+});
+
+test('compression conflict presentation shows the one-click button before recovery actions', () => {
+  const schedule = {
+    status: 'conflict',
+    conflict: {
+      kind: 'desired_overflow',
+      compressionAvailable: true,
+      actions: []
+    }
+  };
+
+  assert.equal(shouldOfferCompression(schedule), true);
+  assert.equal(shouldShowRecoveryActions(schedule), false);
+});
+
+test('below-minimum compressed conflict presentation shows recovery actions', () => {
+  const schedule = {
+    status: 'conflict',
+    conflict: {
+      kind: 'compressed_below_minimum',
+      compressionAvailable: false,
+      actions: ['增加可用时间后重排']
+    }
+  };
+
+  assert.equal(shouldOfferCompression(schedule), false);
+  assert.equal(shouldShowRecoveryActions(schedule), true);
+});
+
+test('compressionAllocationForTask reads the compressed allocation by task id', () => {
+  const schedule = {
+    status: 'ok',
+    compression: {
+      allocations: [
+        { taskId: 'task-1', desiredMinutes: 120, allocatedMinutes: 80 },
+        { taskId: 'task-2', desiredMinutes: 60, allocatedMinutes: 40 }
+      ]
+    }
+  };
+
+  assert.deepEqual(compressionAllocationForTask(schedule, 'task-2'), {
+    taskId: 'task-2',
+    desiredMinutes: 60,
+    allocatedMinutes: 40
+  });
+  assert.equal(compressionAllocationForTask(schedule, 'missing'), null);
 });
 
 test('plan calendar events become tasks and retain their calendar event id', () => {

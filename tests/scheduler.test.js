@@ -77,6 +77,115 @@ test('detects hard minimum duration conflict', () => {
   ]);
 });
 
+test('asks for proportional compression when desired work exceeds available time', () => {
+  const result = scheduleDay({
+    planDate: PLAN_DATE,
+    now: NOW,
+    availableBlocks: [block('09:00', '10:30')],
+    protectedBlocks: [],
+    requireCompressionConfirmation: true,
+    tasks: [
+      task({
+        taskName: '英语',
+        desiredMinutes: 120,
+        minimumMinutes: 20,
+        importance: 4
+      }),
+      task({
+        taskName: '数学',
+        desiredMinutes: 60,
+        minimumMinutes: 20,
+        importance: 4
+      })
+    ]
+  });
+
+  assert.equal(result.status, 'conflict');
+  assert.equal(result.conflict.kind, 'desired_overflow');
+  assert.equal(result.conflict.availableMinutes, 90);
+  assert.equal(result.conflict.desiredMinutes, 180);
+  assert.equal(result.conflict.compressionAvailable, true);
+  assert.deepEqual(result.conflict.actions, []);
+});
+
+test('proportional compression schedules tasks by desired-time ratio when minimums still hold', () => {
+  const result = scheduleDay({
+    planDate: PLAN_DATE,
+    now: NOW,
+    availableBlocks: [block('09:00', '10:30')],
+    protectedBlocks: [],
+    allocationMode: 'proportional',
+    tasks: [
+      task({
+        taskName: '英语',
+        desiredMinutes: 120,
+        minimumMinutes: 20,
+        importance: 1
+      }),
+      task({
+        taskName: '数学',
+        desiredMinutes: 60,
+        minimumMinutes: 20,
+        importance: 5
+      })
+    ]
+  });
+
+  const allocations = new Map(result.compression.allocations.map((item) => [
+    item.taskName,
+    item.allocatedMinutes
+  ]));
+
+  assert.equal(result.status, 'ok');
+  assert.equal(result.compression.desiredMinutes, 180);
+  assert.equal(result.compression.availableMinutes, 90);
+  assert.equal(allocations.get('英语'), 60);
+  assert.equal(allocations.get('数学'), 30);
+});
+
+test('proportional compression shows recovery actions only when compressed work drops below minimum', () => {
+  const result = scheduleDay({
+    planDate: PLAN_DATE,
+    now: NOW,
+    availableBlocks: [block('09:00', '09:50')],
+    protectedBlocks: [],
+    allocationMode: 'proportional',
+    tasks: [
+      task({
+        taskName: '英语',
+        desiredMinutes: 80,
+        minimumMinutes: 45,
+        importance: 4
+      }),
+      task({
+        taskName: '数学',
+        desiredMinutes: 20,
+        minimumMinutes: 15,
+        importance: 4
+      })
+    ]
+  });
+
+  assert.equal(result.status, 'conflict');
+  assert.equal(result.conflict.kind, 'compressed_below_minimum');
+  assert.deepEqual(
+    result.conflict.belowMinimum.map((item) => ({
+      taskName: item.taskName,
+      allocatedMinutes: item.allocatedMinutes,
+      minimumMinutes: item.minimumMinutes
+    })),
+    [
+      { taskName: '英语', allocatedMinutes: 40, minimumMinutes: 45 },
+      { taskName: '数学', allocatedMinutes: 10, minimumMinutes: 15 }
+    ]
+  );
+  assert.deepEqual(result.conflict.actions, [
+    '增加可用时间后重排',
+    '降低部分任务最小时长后重排',
+    '删除/跳过低优先级任务后重排'
+  ]);
+});
+
 test('does not overlap scheduled segments when available blocks overlap across contexts', () => {
   const result = scheduleDay({
     planDate: PLAN_DATE,
