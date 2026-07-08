@@ -110,6 +110,46 @@ test('schedules desired overflow by computing actual durations instead of report
   assert.equal(allocations.get('英语') + allocations.get('数学'), 90);
 });
 
+test('schedules a short splittable task even when type min segment exceeds actual duration', () => {
+  const result = scheduleDay({
+    planDate: '2026-07-08',
+    now: '2026-07-08T12:09:12',
+    availableBlocks: [
+      {
+        start: '2026-07-08T08:00:00',
+        end: '2026-07-08T16:57:00',
+        context: CONTEXTS.WORK
+      },
+      {
+        start: '2026-07-08T17:20:00',
+        end: '2026-07-08T23:00:00',
+        context: CONTEXTS.HOME
+      }
+    ],
+    protectedBlocks: [],
+    tasks: [
+      task({
+        taskName: 'supermemo',
+        taskType: '复杂教程和学习',
+        desiredMinutes: 20,
+        minimumMinutes: 5,
+        executionContext: CONTEXTS.HOME,
+        splittable: true,
+        minSegmentMinutes: 25,
+        importance: 1
+      })
+    ]
+  });
+
+  const segments = scheduledSegments(result);
+  const actualDuration = result.durationPlan.allocations.find((item) => item.taskName === 'supermemo');
+
+  assert.equal(result.status, 'ok');
+  assert.equal(segments.length, 1);
+  assert.equal(segments[0].allocatedMinutes, 20);
+  assert.equal(actualDuration.actualMinutes, 20);
+});
+
 test('actual duration model preserves incompressible tasks and distributes remaining time to flexible tasks', () => {
   const result = scheduleDay({
     planDate: PLAN_DATE,
@@ -565,7 +605,7 @@ test('splittable tasks do not emit follow-up segments shorter than their minimum
   assert.ok(learningSegments.every((segment) => segment.allocatedMinutes >= 30));
 });
 
-test('splittable tasks do not emit first segment shorter than their minimum segment length', () => {
+test('splittable task shorter than its minimum segment length can be scheduled as one full segment', () => {
   const shortTask = task({
     taskName: '短任务学习',
     desiredMinutes: 20,
@@ -586,8 +626,15 @@ test('splittable tasks do not emit first segment shorter than their minimum segm
     segment.taskId === shortTask.taskId
   ));
 
-  assert.equal(result.status, 'conflict');
-  assert.deepEqual(shortTaskSegments, []);
+  assert.equal(result.status, 'ok');
+  assert.deepEqual(shortTaskSegments, [{
+    taskId: shortTask.taskId,
+    taskName: shortTask.taskName,
+    status: TASK_STATUSES.SCHEDULED,
+    start: `${PLAN_DATE}T09:00:00`,
+    end: `${PLAN_DATE}T09:20:00`,
+    allocatedMinutes: 20
+  }]);
 });
 
 test('fixed task splitting an evening block does not starve other tasks below their minimums', () => {

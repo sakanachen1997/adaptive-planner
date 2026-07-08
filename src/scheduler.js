@@ -312,9 +312,12 @@ function placeTask(task, minutes, blocks) {
   const segments = [];
   let remaining = minutes;
   let remainingBlocks = blocks.map((block) => ({ ...block }));
+  const minimumSegmentMinutes = task.splittable
+    ? Math.min(task.minSegmentMinutes, minutes)
+    : task.effectiveMinimumMinutes;
 
   while (remaining > 0) {
-    if (task.splittable && remaining < task.minSegmentMinutes) {
+    if (task.splittable && remaining < minimumSegmentMinutes) {
       break;
     }
 
@@ -327,7 +330,7 @@ function placeTask(task, minutes, blocks) {
           ...compatible.filter((item) => capacityOf(item) >= remaining),
           ...compatible.filter((item) => {
             const capacity = capacityOf(item);
-            return capacity < remaining && remaining - capacity >= task.minSegmentMinutes;
+            return capacity < remaining && remaining - capacity >= minimumSegmentMinutes;
           }),
           ...compatible
         ]
@@ -342,7 +345,7 @@ function placeTask(task, minutes, blocks) {
       const block = remainingBlocks[item.index];
       const capacity = usableMinutes(task, block);
       const minimumForSegment = task.splittable
-        ? task.minSegmentMinutes
+        ? minimumSegmentMinutes
         : Math.min(remaining, task.effectiveMinimumMinutes);
 
       if (capacity < minimumForSegment) {
@@ -352,7 +355,7 @@ function placeTask(task, minutes, blocks) {
       const used = task.splittable ? Math.min(remaining, capacity) : remaining;
       const actualUsed = task.splittable ? used : Math.min(used, capacity);
 
-      if (task.splittable && actualUsed < task.minSegmentMinutes) {
+      if (task.splittable && actualUsed < minimumSegmentMinutes) {
         continue;
       }
 

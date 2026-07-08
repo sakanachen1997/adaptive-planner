@@ -225,6 +225,7 @@ Actual duration is computed as follows:
 3. Treat tasks whose minimum duration equals desired duration as incompressible.
 4. Distribute remaining time across flexible tasks using desired-minus-minimum slack, importance, deadline urgency, task type, and other priority signals.
 5. Use the computed actual duration for schedule placement.
+6. `minSegmentMinutes` prevents fragmented splits, not short complete tasks. If a task's computed actual duration is shorter than `minSegmentMinutes`, the scheduler may place it as one complete segment.
 
 The day plan should always show each task's desired duration, minimum duration, and actual duration.
 
