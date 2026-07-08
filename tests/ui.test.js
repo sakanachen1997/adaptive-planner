@@ -8,15 +8,19 @@ import {
   calendarEventToProtectedBlock,
   actualDurationForTask,
   buildDebugReport,
+  buildTimelineItems,
   conflictSummaryLines,
+  deadlineTodayValue,
   deadlineLabel,
   editableTasksForSchedule,
   removeTaskForReschedule,
+  taskInputFromFormData,
   formInputForTask,
   shouldShowRecoveryActions,
   mergePlanTasks,
   resetCalendarStateForDateChange,
   selectTaskForCompletion,
+  timelineBounds,
   upsertLocalTask
 } from '../src/ui.js';
 
@@ -170,6 +174,17 @@ test('deadlineLabel is empty when no deadline is set', () => {
   assert.equal(deadlineLabel('', '2026-07-08'), '');
 });
 
+test('deadlineTodayValue preserves existing time and replaces date', () => {
+  assert.equal(
+    deadlineTodayValue('2026-07-08T12:34:56', '2026-08-01T18:30'),
+    '2026-07-08T18:30'
+  );
+});
+
+test('deadlineTodayValue uses 23:59 when deadline is empty', () => {
+  assert.equal(deadlineTodayValue('2026-07-08T12:34:56', ''), '2026-07-08T23:59');
+});
+
 test('formInputForTask preserves task fields as form-ready values', () => {
   assert.deepEqual(formInputForTask({
     taskName: 'Math',
@@ -206,6 +221,72 @@ test('formInputForTask preserves task fields as form-ready values', () => {
     fixedStart: '19:00',
     fixedEnd: '20:00'
   });
+});
+
+test('fixed task form input derives desired and minimum duration from fixed time range', () => {
+  const input = taskInputFromFormData(new Map([
+    ['taskName', 'Evening workout'],
+    ['taskType', '运动健身'],
+    ['desiredMinutes', '999'],
+    ['minimumMinutes', '1'],
+    ['importance', '3'],
+    ['deadline', ''],
+    ['executionContext', 'home'],
+    ['energyDemand', 'medium'],
+    ['physicalDemand', 'high'],
+    ['orderPreference', 'evening'],
+    ['splittable', null],
+    ['minSegmentMinutes', '30'],
+    ['externalCommitment', '2'],
+    ['fixed', 'on'],
+    ['fixedStart', '19:30'],
+    ['fixedEnd', '21:20']
+  ]));
+
+  assert.equal(input.desiredMinutes, '110');
+  assert.equal(input.minimumMinutes, '110');
+});
+
+test('fixed task form input rejects non-positive fixed time range', () => {
+  assert.throws(() => taskInputFromFormData(new Map([
+    ['taskName', 'Bad fixed task'],
+    ['taskType', '自定义'],
+    ['desiredMinutes', ''],
+    ['minimumMinutes', ''],
+    ['importance', '3'],
+    ['deadline', ''],
+    ['executionContext', 'any'],
+    ['energyDemand', 'medium'],
+    ['physicalDemand', 'low'],
+    ['orderPreference', 'any'],
+    ['splittable', 'on'],
+    ['minSegmentMinutes', '20'],
+    ['externalCommitment', '1'],
+    ['fixed', 'on'],
+    ['fixedStart', '21:20'],
+    ['fixedEnd', '19:30']
+  ])), RangeError);
+});
+
+test('non-fixed task form input still requires desired and minimum duration', () => {
+  assert.throws(() => taskInputFromFormData(new Map([
+    ['taskName', 'Flexible task'],
+    ['taskType', '自定义'],
+    ['desiredMinutes', ''],
+    ['minimumMinutes', ''],
+    ['importance', '3'],
+    ['deadline', ''],
+    ['executionContext', 'any'],
+    ['energyDemand', 'medium'],
+    ['physicalDemand', 'low'],
+    ['orderPreference', 'any'],
+    ['splittable', 'on'],
+    ['minSegmentMinutes', '20'],
+    ['externalCommitment', '1'],
+    ['fixed', null],
+    ['fixedStart', ''],
+    ['fixedEnd', '']
+  ])), RangeError);
 });
 
 test('upsertLocalTask replaces the matching local task instead of duplicating it', () => {
@@ -311,6 +392,42 @@ test('actualDurationForTask reads computed actual duration by task id', () => {
   assert.equal(actualDurationForTask(schedule, 'missing'), null);
 });
 
+test('buildTimelineItems includes scheduled Plan segments and protected calendar blocks', () => {
+  const items = buildTimelineItems({
+    schedule: {
+      status: 'ok',
+      segments: [{
+        taskId: 'task-1',
+        taskName: 'Coding',
+        status: TASK_STATUSES.SCHEDULED,
+        start: '2026-07-08T09:00:00',
+        end: '2026-07-08T10:00:00',
+        allocatedMinutes: 60
+      }]
+    },
+    protectedBlocks: [{
+      summary: 'Meeting',
+      start: '2026-07-08T10:30:00',
+      end: '2026-07-08T11:00:00',
+      calendarEventId: 'event-1'
+    }],
+    tasks: [{ taskId: 'task-1', taskName: 'Coding' }]
+  });
+
+  assert.deepEqual(items.map((item) => item.kind), ['task', 'protected']);
+  assert.equal(items[0].editable, true);
+  assert.equal(items[1].editable, false);
+  assert.equal(items[0].startMinute, 540);
+  assert.equal(items[1].startMinute, 630);
+});
+
+test('timelineBounds spans visible schedule and protected blocks', () => {
+  assert.deepEqual(timelineBounds([
+    { startMinute: 570, endMinute: 630 },
+    { startMinute: 1200, endMinute: 1260 }
+  ]), { startMinute: 540, endMinute: 1320, totalMinutes: 780 });
+});
+
 test('plan calendar events become tasks and retain their calendar event id', () => {
   const metadata = {
     schemaVersion: 1,
@@ -406,6 +523,45 @@ test('calendarEventToPlanTask uses Calendar event time as fixed planned time for
   assert.equal(task.fixedEnd, '15:45');
   assert.equal(task.segmentId, 'dragged-task_segment_1');
   assert.equal(task.calendarEventId, 'event-dragged');
+});
+
+test('calendar readback Plan task can be rendered as timeline task item', () => {
+  const task = calendarEventToPlanTask({
+    id: 'event-plan',
+    summary: '[Plan] Coding',
+    description: buildDescription('Created by planner', {
+      schemaVersion: 1,
+      app: APP_ID,
+      taskId: 'task-plan',
+      taskName: 'Coding',
+      taskType: '编码工作',
+      desiredMinutes: 60,
+      minimumMinutes: 60,
+      importance: 5,
+      status: TASK_STATUSES.SCHEDULED
+    }),
+    start: { dateTime: '2026-07-08T09:00:00+02:00' },
+    end: { dateTime: '2026-07-08T10:00:00+02:00' }
+  });
+  const items = buildTimelineItems({
+    schedule: {
+      status: 'ok',
+      segments: [{
+        taskId: 'task-plan',
+        taskName: 'Coding',
+        status: TASK_STATUSES.SCHEDULED,
+        start: task.plannedStart,
+        end: task.plannedEnd,
+        allocatedMinutes: 60
+      }]
+    },
+    protectedBlocks: [],
+    tasks: [task]
+  });
+
+  assert.equal(items[0].kind, 'task');
+  assert.equal(items[0].task.calendarEventId, 'event-plan');
+  assert.equal(items[0].editable, true);
 });
 
 test('sync operations create or update only scheduled non-completed plan segments', () => {

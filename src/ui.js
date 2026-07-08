@@ -427,6 +427,70 @@ export function actualDurationForTask(schedule, taskId) {
   return schedule?.durationPlan?.allocations?.find((item) => item.taskId === taskId) ?? null;
 }
 
+function timelineMinutes(value) {
+  const time = normalizeDateTime(value).slice(11, 16);
+  const [hour, minute] = time.split(':').map(Number);
+  return hour * 60 + minute;
+}
+
+export function buildTimelineItems({ schedule = null, protectedBlocks = [], tasks = [] }) {
+  const candidatesByTaskId = taskCandidatesByTaskId(tasks);
+  const taskItems = (schedule?.segments ?? []).map((segment) => {
+    const task = findTaskForSegment(segment, candidatesByTaskId);
+
+    return {
+      kind: 'task',
+      id: segment.segmentId ?? `${segment.taskId}:${segment.start}:${segment.end}`,
+      task,
+      segment,
+      title: segment.taskName,
+      start: segment.start,
+      end: segment.end,
+      startMinute: timelineMinutes(segment.start),
+      endMinute: timelineMinutes(segment.end),
+      status: segment.status,
+      editable: Boolean(task)
+    };
+  });
+  const protectedItems = protectedBlocks.map((block) => ({
+    kind: 'protected',
+    id: `protected:${block.calendarEventId ?? block.start}`,
+    block,
+    title: block.summary ?? '普通日程',
+    start: block.start,
+    end: block.end,
+    startMinute: timelineMinutes(block.start),
+    endMinute: timelineMinutes(block.end),
+    status: 'protected',
+    editable: false
+  }));
+
+  return [...taskItems, ...protectedItems].sort((left, right) => (
+    left.start.localeCompare(right.start) || left.end.localeCompare(right.end)
+  ));
+}
+
+export function timelineBounds(items) {
+  if (items.length === 0) {
+    return { startMinute: 480, endMinute: 1320, totalMinutes: 840 };
+  }
+
+  const startMinute = Math.max(
+    0,
+    Math.floor(Math.min(...items.map((item) => item.startMinute)) / 60) * 60
+  );
+  const endMinute = Math.min(
+    1440,
+    Math.ceil(Math.max(...items.map((item) => item.endMinute)) / 60) * 60 + 60
+  );
+
+  return {
+    startMinute,
+    endMinute,
+    totalMinutes: Math.max(60, endMinute - startMinute)
+  };
+}
+
 export function buildDebugReport({
   planDate,
   now,
@@ -465,6 +529,12 @@ export function deadlineLabel(deadline, planDate) {
   }
 
   return date === planDate ? `截止 ${time}` : `截止 ${date} ${time}`;
+}
+
+export function deadlineTodayValue(now, currentValue) {
+  const today = normalizeDateTime(now).slice(0, 10);
+  const time = String(currentValue ?? '').slice(11, 16) || '23:59';
+  return `${today}T${time}`;
 }
 
 function sameDateTime(left, right) {
@@ -736,7 +806,8 @@ function createState() {
       .map(blockFromSetting),
     schedule: null,
     lastSyncOperations: emptySyncOperations(),
-    editingTaskKey: null
+    editingTaskKey: null,
+    selectedTimelineItemId: null
   };
 }
 
@@ -974,10 +1045,188 @@ function renderConflictEditableTasks(root, tasks) {
   root.append(wrapper);
 }
 
+function timelineHourLabels(bounds) {
+  const labels = [];
+
+  for (let minute = bounds.startMinute; minute <= bounds.endMinute; minute += 60) {
+    labels.push({
+      minute,
+      label: `${String(Math.floor(minute / 60)).padStart(2, '0')}:00`
+    });
+  }
+
+  return labels;
+}
+
+function renderTimelineItem(parent, item, bounds) {
+  const node = document.createElement('button');
+  const top = ((item.startMinute - bounds.startMinute) / bounds.totalMinutes) * 100;
+  const height = ((item.endMinute - item.startMinute) / bounds.totalMinutes) * 100;
+
+  node.type = 'button';
+  node.className = [
+    'timeline-block',
+    `timeline-${item.kind}`,
+    `timeline-${item.status}`,
+    item.id === state.selectedTimelineItemId ? 'selected' : ''
+  ].filter(Boolean).join(' ');
+  node.style.top = `${top}%`;
+  node.style.height = `${Math.max(3, height)}%`;
+  node.dataset.timelineItemId = item.id;
+  appendText(node, item.title, 'strong');
+  appendText(node, `${item.start.slice(11, 16)} - ${item.end.slice(11, 16)}`, 'span');
+  parent.append(node);
+}
+
+function renderTimelineView(parent, items, bounds) {
+  parent.className = 'timeline-view';
+  clear(parent);
+
+  for (const hour of timelineHourLabels(bounds)) {
+    const label = document.createElement('div');
+    label.className = 'timeline-hour';
+    label.style.top = `${((hour.minute - bounds.startMinute) / bounds.totalMinutes) * 100}%`;
+    label.textContent = hour.label;
+    parent.append(label);
+  }
+
+  for (const item of items) {
+    renderTimelineItem(parent, item, bounds);
+  }
+}
+
+function renderScheduleSummary(parent) {
+  if (!state.schedule) {
+    appendText(parent, DEFAULT_MESSAGE, 'p');
+    return;
+  }
+
+  appendText(parent, '计划概览', 'strong');
+
+  if (state.schedule.durationPlan) {
+    appendText(
+      parent,
+      `想要总时长 ${state.schedule.durationPlan.desiredMinutes} 分钟，最小总时长 ${state.schedule.durationPlan.minimumMinutes} 分钟，可用时间 ${state.schedule.durationPlan.availableMinutes} 分钟。`,
+      'p'
+    ).className = 'muted';
+    return;
+  }
+
+  if (state.schedule.status === 'conflict') {
+    appendText(parent, '当前计划存在冲突。请查看上方冲突说明，或编辑下方未完成任务。', 'p').className = 'muted';
+    return;
+  }
+
+  appendText(parent, '选择左侧时间块查看详情。', 'p').className = 'muted';
+}
+
+function appendCompleteButton(parent, segment, task) {
+  if (segment.status === TASK_STATUSES.COMPLETED) {
+    return;
+  }
+
+  const button = document.createElement('button');
+  button.type = 'button';
+  button.textContent = '完成';
+  button.dataset.completeTaskId = segment.taskId;
+  button.dataset.segmentStart = segment.start;
+  button.dataset.segmentEnd = segment.end;
+  if (task?.segmentId) {
+    button.dataset.segmentId = task.segmentId;
+  }
+  if (task?.calendarEventId) {
+    button.dataset.calendarEventId = task.calendarEventId;
+  }
+  parent.append(button);
+}
+
+function appendRemoveButton(parent, task) {
+  const remove = document.createElement('button');
+  remove.type = 'button';
+  remove.textContent = task.calendarEventId ? '跳过并重排' : '删除并重排';
+  remove.dataset.removeTaskKey = taskEditKey(task);
+  parent.append(remove);
+}
+
+function renderTimelineTaskDetail(parent, item) {
+  const task = item.task;
+  const segment = item.segment;
+  const actualDuration = actualDurationForTask(state.schedule, segment.taskId);
+  const deadlineText = task ? deadlineLabel(task.deadline, state.planDate) : '';
+
+  appendText(parent, item.title, 'strong');
+  appendText(
+    parent,
+    `${item.start.slice(11, 16)} - ${item.end.slice(11, 16)}`
+      + (segment.allocatedMinutes ? `，${segment.allocatedMinutes} 分钟` : '')
+      + (deadlineText ? `，${deadlineText}` : ''),
+    'p'
+  ).className = 'muted';
+
+  if (actualDuration) {
+    appendText(
+      parent,
+      `想要 ${actualDuration.desiredMinutes} 分钟 / 最小 ${actualDuration.minimumMinutes} 分钟 / 实际 ${actualDuration.actualMinutes} 分钟`,
+      'p'
+    ).className = 'muted';
+  }
+
+  if (!task) {
+    appendText(parent, '找不到对应任务，无法编辑。', 'p').className = 'muted';
+    return;
+  }
+
+  const actions = document.createElement('div');
+  actions.className = 'schedule-actions';
+  appendEditButton(actions, task);
+  appendCompleteButton(actions, segment, task);
+  appendRemoveButton(actions, task);
+  parent.append(actions);
+}
+
+function renderProtectedDetail(parent, item) {
+  appendText(parent, item.title, 'strong');
+  appendText(parent, `${item.start.slice(11, 16)} - ${item.end.slice(11, 16)}`, 'p').className = 'muted';
+  appendText(parent, '普通 Google Calendar 事件。此时间段受保护，不会被 Plan 修改或删除。', 'p').className = 'muted';
+}
+
+function renderTimelineDetail(parent, selectedItem) {
+  parent.className = 'timeline-detail';
+  clear(parent);
+
+  if (!selectedItem) {
+    renderScheduleSummary(parent);
+    return;
+  }
+
+  if (selectedItem.kind === 'protected') {
+    renderProtectedDetail(parent, selectedItem);
+    return;
+  }
+
+  renderTimelineTaskDetail(parent, selectedItem);
+}
+
+function appendPartialSchedule(root) {
+  if (state.schedule.status !== 'partial' || !state.schedule.unscheduled?.length) {
+    return;
+  }
+
+  const partial = document.createElement('div');
+  partial.className = 'schedule-item error';
+  appendText(partial, '部分任务未完全安排：', 'strong');
+  const list = document.createElement('ul');
+  for (const item of state.schedule.unscheduled) {
+    appendText(list, `${item.taskName} 剩余 ${item.remainingMinutes} 分钟`, 'li');
+  }
+  partial.append(list);
+  root.append(partial);
+}
+
 function renderSchedule() {
   const root = element('scheduleList');
   const currentTasks = allTasks();
-  const candidatesByTaskId = taskCandidatesByTaskId(currentTasks);
+  const protectedBlocks = protectedBlocksFromCalendar();
 
   renderConflictPanel();
 
@@ -993,85 +1242,26 @@ function renderSchedule() {
     return;
   }
 
-  if ((state.schedule.segments ?? []).length === 0) {
-    appendText(root, '当前没有可显示的计划块。', 'p');
-  }
+  const items = buildTimelineItems({
+    schedule: state.schedule,
+    protectedBlocks,
+    tasks: currentTasks
+  });
+  const selectedItem = items.find((item) => item.id === state.selectedTimelineItemId) ?? null;
+  const bounds = timelineBounds(items);
+  const layout = document.createElement('div');
+  const timelineView = document.createElement('div');
+  const timelineDetail = document.createElement('div');
 
-  if (state.schedule.durationPlan) {
-    const summary = document.createElement('div');
-    summary.className = 'schedule-item duration-plan';
-    appendText(summary, '调度时长', 'strong');
-    appendText(
-      summary,
-      `想要总时长 ${state.schedule.durationPlan.desiredMinutes} 分钟，最小总时长 ${state.schedule.durationPlan.minimumMinutes} 分钟，可用时间 ${state.schedule.durationPlan.availableMinutes} 分钟。`,
-      'div'
-    ).className = 'muted';
-    root.append(summary);
-  }
-
-  for (const segment of state.schedule.segments ?? []) {
-    const item = document.createElement('div');
-    item.className = `schedule-item ${segment.status === TASK_STATUSES.COMPLETED ? 'completed' : ''}`;
-    const matchedTask = findTaskForSegment(segment, candidatesByTaskId);
-    const actualDuration = actualDurationForTask(state.schedule, segment.taskId);
-    const deadlineText = matchedTask
-      ? deadlineLabel(matchedTask.deadline, state.planDate)
-      : '';
-
-    appendText(item, segment.taskName, 'strong');
-    appendText(
-      item,
-      `${segment.start.slice(11, 16)} - ${segment.end.slice(11, 16)}`
-        + (segment.allocatedMinutes ? `，${segment.allocatedMinutes} 分钟` : '')
-        + (deadlineText ? `，${deadlineText}` : '')
-        + (actualDuration ? `（想要 ${actualDuration.desiredMinutes} 分钟 / 最小 ${actualDuration.minimumMinutes} 分钟 / 实际 ${actualDuration.actualMinutes} 分钟）` : ''),
-      'div'
-    ).className = 'muted';
-
-    const actions = document.createElement('div');
-    actions.className = 'schedule-actions';
-
-    if (matchedTask) {
-      appendEditButton(actions, matchedTask);
-    }
-
-    if (segment.status !== TASK_STATUSES.COMPLETED) {
-      const button = document.createElement('button');
-      button.type = 'button';
-      button.textContent = '完成';
-      button.dataset.completeTaskId = segment.taskId;
-      button.dataset.segmentStart = segment.start;
-      button.dataset.segmentEnd = segment.end;
-      if (matchedTask?.segmentId) {
-        button.dataset.segmentId = matchedTask.segmentId;
-      }
-      if (matchedTask?.calendarEventId) {
-        button.dataset.calendarEventId = matchedTask.calendarEventId;
-      }
-      actions.append(button);
-    }
-
-    if (actions.childElementCount > 0) {
-      item.append(actions);
-    }
-
-    root.append(item);
-  }
-
+  layout.className = 'timeline-layout';
+  timelineView.id = 'timelineView';
+  timelineDetail.id = 'timelineDetail';
+  renderTimelineView(timelineView, items, bounds);
+  renderTimelineDetail(timelineDetail, selectedItem);
+  layout.append(timelineView, timelineDetail);
+  root.append(layout);
   renderConflictEditableTasks(root, currentTasks);
-
-  if (state.schedule.status === 'partial' && state.schedule.unscheduled?.length) {
-    const partial = document.createElement('div');
-    partial.className = 'schedule-item error';
-    appendText(partial, '部分任务未完全安排：', 'strong');
-    const list = document.createElement('ul');
-    for (const item of state.schedule.unscheduled) {
-      appendText(list, `${item.taskName} 剩余 ${item.remainingMinutes} 分钟`, 'li');
-    }
-    partial.append(list);
-    root.append(partial);
-  }
-
+  appendPartialSchedule(root);
   renderSyncPreview();
 }
 
@@ -1197,14 +1387,54 @@ async function syncSchedule() {
   }
 }
 
-function taskInputFromForm(form) {
-  const data = new FormData(form);
+function minutesFromTimeRange(start, end) {
+  const [startHour, startMinute] = String(start).split(':').map(Number);
+  const [endHour, endMinute] = String(end).split(':').map(Number);
+
+  if (![startHour, startMinute, endHour, endMinute].every(Number.isFinite)) {
+    throw new RangeError('fixedStart and fixedEnd must be valid times');
+  }
+
+  const minutes = endHour * 60 + endMinute - (startHour * 60 + startMinute);
+
+  if (minutes <= 0) {
+    throw new RangeError('fixedEnd must be later than fixedStart');
+  }
+
+  return minutes;
+}
+
+function requiredFormValue(data, fieldName) {
+  const value = data.get(fieldName);
+
+  if (String(value ?? '').trim() === '') {
+    throw new RangeError(`${fieldName} must not be blank`);
+  }
+
+  return value;
+}
+
+export function taskInputFromFormData(data) {
+  const fixed = data.get('fixed') === 'on';
+  const fixedStart = data.get('fixedStart');
+  const fixedEnd = data.get('fixedEnd');
+  let desiredMinutes = data.get('desiredMinutes');
+  let minimumMinutes = data.get('minimumMinutes');
+
+  if (fixed && fixedStart && fixedEnd) {
+    const fixedMinutes = String(minutesFromTimeRange(fixedStart, fixedEnd));
+    desiredMinutes = fixedMinutes;
+    minimumMinutes = fixedMinutes;
+  } else {
+    desiredMinutes = requiredFormValue(data, 'desiredMinutes');
+    minimumMinutes = requiredFormValue(data, 'minimumMinutes');
+  }
 
   return {
     taskName: data.get('taskName'),
     taskType: data.get('taskType'),
-    desiredMinutes: data.get('desiredMinutes'),
-    minimumMinutes: data.get('minimumMinutes'),
+    desiredMinutes,
+    minimumMinutes,
     importance: data.get('importance'),
     deadline: data.get('deadline'),
     executionContext: data.get('executionContext'),
@@ -1214,10 +1444,14 @@ function taskInputFromForm(form) {
     splittable: data.get('splittable') === 'on',
     minSegmentMinutes: data.get('minSegmentMinutes'),
     externalCommitment: data.get('externalCommitment'),
-    fixed: data.get('fixed') === 'on',
-    fixedStart: data.get('fixedStart'),
-    fixedEnd: data.get('fixedEnd')
+    fixed,
+    fixedStart,
+    fixedEnd
   };
+}
+
+function taskInputFromForm(form) {
+  return taskInputFromFormData(new FormData(form));
 }
 
 function setTaskFormMode(task = null) {
@@ -1416,6 +1650,17 @@ function addAvailableBlock() {
   recalculate();
 }
 
+function fillDeadlineToday() {
+  const form = element('taskForm');
+  const input = form?.elements.deadline;
+
+  if (!input) {
+    return;
+  }
+
+  input.value = deadlineTodayValue(new Date(), input.value);
+}
+
 function currentDebugReport() {
   return buildDebugReport({
     planDate: state.planDate,
@@ -1487,6 +1732,15 @@ function removeTask(key) {
 }
 
 function handleScheduleClick(event) {
+  const timelineItemId = event.target.dataset.timelineItemId
+    ?? event.target.closest?.('[data-timeline-item-id]')?.dataset.timelineItemId;
+
+  if (timelineItemId) {
+    state.selectedTimelineItemId = timelineItemId;
+    renderSchedule();
+    return;
+  }
+
   const editKey = event.target.dataset.editTaskKey;
 
   if (editKey) {
@@ -1527,6 +1781,7 @@ function wireEvents() {
   element('availableBlocks')?.addEventListener('change', handleAvailableBlockInput);
   element('availableBlocks')?.addEventListener('click', handleAvailableBlockClick);
   element('taskForm')?.addEventListener('submit', submitTaskForm);
+  element('deadlineTodayButton')?.addEventListener('click', fillDeadlineToday);
   firstElement('select[name="taskType"]')?.addEventListener('change', (event) => {
     applyTaskTypePreset(event.target.value);
   });

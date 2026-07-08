@@ -47,11 +47,11 @@
           </label>
           <label class="field">
             <span>想要时长</span>
-            <input name="desiredMinutes" required type="number" min="1" />
+            <input name="desiredMinutes" type="number" min="1" />
           </label>
           <label class="field">
             <span>最小时长</span>
-            <input name="minimumMinutes" required type="number" min="1" />
+            <input name="minimumMinutes" type="number" min="1" />
           </label>
           <label class="field">
             <span>重要性</span>
@@ -59,7 +59,10 @@
           </label>
           <label class="field">
             <span>截止时间（任务须在此之前完成）</span>
-            <input name="deadline" type="datetime-local" />
+            <div class="input-row">
+              <input name="deadline" type="datetime-local" />
+              <button id="deadlineTodayButton" type="button">今日</button>
+            </div>
           </label>
           <label class="field">
             <span>执行场景</span>
@@ -103,7 +106,10 @@
       <section class="panel wide">
         <h2>当天计划</h2>
         <div id="conflictPanel" class="hidden"></div>
-        <div id="scheduleList"></div>
+        <div id="scheduleList">
+          <div id="timelineView"></div>
+          <div id="timelineDetail"></div>
+        </div>
         <h3>同步预览</h3>
         <div id="syncPreview"></div>
         <button id="syncButton" type="button">写入 Google Calendar</button>

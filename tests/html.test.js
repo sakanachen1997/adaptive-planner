@@ -45,6 +45,10 @@ test('task form exposes every task type preset field as editable controls', () =
   }
 });
 
+test('deadline field exposes a today shortcut button', () => {
+  assert.match(html, /id="deadlineTodayButton"[^>]*>今日<\/button>/);
+});
+
 test('page exposes a persistent scheduling button instead of a compression action', () => {
   assert.match(html, /id="rescheduleButton"[^>]*>调度<\/button>/);
   assert.doesNotMatch(html, />一键按比例压缩<\/button>/);
@@ -52,4 +56,9 @@ test('page exposes a persistent scheduling button instead of a compression actio
 
 test('page exposes a debug report copy button', () => {
   assert.match(html, /id="copyDebugButton"[^>]*>复制调试信息<\/button>/);
+});
+
+test('day plan exposes timeline and detail containers', () => {
+  assert.match(html, /id="timelineView"/);
+  assert.match(html, /id="timelineDetail"/);
 });

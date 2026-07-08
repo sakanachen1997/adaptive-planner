@@ -75,6 +75,16 @@ p {
   font-size: 0.9rem;
 }
 
+.input-row {
+  display: flex;
+  gap: 8px;
+}
+
+.input-row input {
+  min-width: 0;
+  flex: 1;
+}
+
 input,
 select,
 button,
@@ -135,6 +145,84 @@ button {
   color: var(--muted);
 }
 
+.timeline-layout {
+  display: grid;
+  grid-template-columns: minmax(260px, 1.3fr) minmax(240px, 0.9fr);
+  gap: 16px;
+  align-items: start;
+}
+
+.timeline-view {
+  position: relative;
+  min-height: 720px;
+  border-left: 2px solid var(--border);
+  background: linear-gradient(#edf1f5 1px, transparent 1px) 0 0 / 100% 48px;
+}
+
+.timeline-hour {
+  position: absolute;
+  left: 0;
+  transform: translate(-62px, -50%);
+  width: 52px;
+  color: var(--muted);
+  font-size: 0.82rem;
+  text-align: right;
+}
+
+.timeline-block {
+  position: absolute;
+  left: 16px;
+  right: 8px;
+  min-height: 28px;
+  overflow: hidden;
+  text-align: left;
+  border: 1px solid var(--border);
+  border-left-width: 4px;
+  border-radius: 6px;
+  background: #fff;
+  display: grid;
+  gap: 2px;
+}
+
+.timeline-block strong,
+.timeline-block span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.timeline-block.selected {
+  outline: 2px solid #2563eb;
+  outline-offset: 2px;
+}
+
+.timeline-task {
+  border-left-color: #2563eb;
+}
+
+.timeline-protected {
+  border-left-color: #64748b;
+  background: #f1f5f9;
+  color: var(--muted);
+}
+
+.timeline-completed {
+  border-left-color: var(--ok);
+  opacity: 0.75;
+}
+
+.timeline-conflict {
+  border-left-color: var(--danger);
+  background: var(--danger-bg);
+}
+
+.timeline-detail {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 12px;
+  background: #fff;
+}
+
 @media (max-width: 1000px) {
   .layout {
     grid-template-columns: 1fr;
@@ -142,5 +230,18 @@ button {
 
   .topbar {
     flex-direction: column;
+  }
+
+  .timeline-layout {
+    grid-template-columns: 1fr;
+  }
+
+  .timeline-hour {
+    transform: translate(0, -50%);
+    background: var(--panel);
+  }
+
+  .timeline-block {
+    left: 64px;
   }
 }
