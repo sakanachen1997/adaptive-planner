@@ -452,12 +452,61 @@ test('plan calendar events become tasks and retain their calendar event id', () 
     ...metadata,
     plannedStart: '2026-07-06T09:00:00',
     plannedEnd: '2026-07-06T10:00:00',
-    fixed: true,
+    fixed: false,
     autoFixed: true,
     fixedStart: '09:00',
     fixedEnd: '10:00',
     calendarEventId: 'event-1'
   });
+});
+
+test('calendar readback keeps non-user-fixed scheduled Plan task flexible', () => {
+  const task = calendarEventToPlanTask({
+    id: 'event-flexible',
+    description: buildDescription('Created by planner', {
+      schemaVersion: 1,
+      app: APP_ID,
+      taskId: 'task-flexible',
+      taskName: 'Flexible task',
+      taskType: 'custom',
+      desiredMinutes: 90,
+      minimumMinutes: 30,
+      importance: 4,
+      status: TASK_STATUSES.SCHEDULED,
+      fixed: false
+    }),
+    start: { dateTime: '2026-07-08T09:00:00+02:00' },
+    end: { dateTime: '2026-07-08T10:00:00+02:00' }
+  });
+
+  assert.equal(task.fixed, false);
+  assert.equal(task.autoFixed, true);
+  assert.equal(task.fixedStart, '09:00');
+  assert.equal(task.fixedEnd, '10:00');
+});
+
+test('calendar readback treats legacy autoFixed metadata as flexible even when fixed was persisted', () => {
+  const task = calendarEventToPlanTask({
+    id: 'event-legacy-autofixed',
+    description: buildDescription('Created by old planner version', {
+      schemaVersion: 1,
+      app: APP_ID,
+      taskId: 'task-legacy-autofixed',
+      taskName: 'Legacy autofixed task',
+      taskType: 'custom',
+      desiredMinutes: 90,
+      minimumMinutes: 30,
+      importance: 4,
+      status: TASK_STATUSES.SCHEDULED,
+      fixed: true,
+      autoFixed: true
+    }),
+    start: { dateTime: '2026-07-08T09:00:00+02:00' },
+    end: { dateTime: '2026-07-08T10:00:00+02:00' }
+  });
+
+  assert.equal(task.fixed, false);
+  assert.equal(task.autoFixed, true);
 });
 
 test('formInputForTask does not pre-check fixed for auto-locked calendar tasks', () => {
@@ -497,7 +546,7 @@ test('deadline violation conflict summary explains the contradiction', () => {
   ]);
 });
 
-test('calendarEventToPlanTask uses Calendar event time as fixed planned time for scheduled metadata', () => {
+test('calendarEventToPlanTask keeps Calendar event time for display without hard-fixing flexible metadata', () => {
   const metadata = {
     schemaVersion: 1,
     app: APP_ID,
@@ -519,11 +568,36 @@ test('calendarEventToPlanTask uses Calendar event time as fixed planned time for
 
   assert.equal(task.plannedStart, '2026-07-06T14:15:00');
   assert.equal(task.plannedEnd, '2026-07-06T15:45:00');
-  assert.equal(task.fixed, true);
+  assert.equal(task.fixed, false);
   assert.equal(task.fixedStart, '14:15');
   assert.equal(task.fixedEnd, '15:45');
   assert.equal(task.segmentId, 'dragged-task_segment_1');
   assert.equal(task.calendarEventId, 'event-dragged');
+});
+
+test('calendarEventToPlanTask preserves user-fixed scheduled metadata as hard fixed', () => {
+  const task = calendarEventToPlanTask({
+    id: 'event-user-fixed',
+    description: buildDescription('Created by planner', {
+      schemaVersion: 1,
+      app: APP_ID,
+      taskId: 'task-user-fixed',
+      taskName: 'User fixed task',
+      taskType: 'custom',
+      desiredMinutes: 60,
+      minimumMinutes: 60,
+      importance: 4,
+      status: TASK_STATUSES.SCHEDULED,
+      fixed: true
+    }),
+    start: { dateTime: '2026-07-06T14:15:00+02:00' },
+    end: { dateTime: '2026-07-06T15:15:00+02:00' }
+  });
+
+  assert.equal(task.fixed, true);
+  assert.equal(task.autoFixed, true);
+  assert.equal(task.fixedStart, '14:15');
+  assert.equal(task.fixedEnd, '15:15');
 });
 
 test('calendar readback Plan task can be rendered as timeline task item', () => {
@@ -602,7 +676,7 @@ test('past unfinished calendar Plan task remains visible as missed timeline item
   assert.equal(items[0].editable, true);
 });
 
-test('rescheduled day still shows past unfinished Calendar Plan task on timeline', () => {
+test('rescheduled day shows past unfinished Calendar Plan task as missed and future work', () => {
   const task = calendarEventToPlanTask({
     id: 'event-past',
     summary: '[Plan] Past task',
@@ -640,10 +714,17 @@ test('rescheduled day still shows past unfinished Calendar Plan task on timeline
   });
 
   assert.equal(schedule.status, 'ok');
-  assert.deepEqual(schedule.segments, []);
-  assert.equal(items.length, 1);
-  assert.equal(items[0].status, 'missed');
-  assert.equal(items[0].task.calendarEventId, 'event-past');
+  assert.deepEqual(schedule.segments.map((segment) => ({
+    status: segment.status,
+    start: segment.start,
+    end: segment.end
+  })), [{
+    status: TASK_STATUSES.SCHEDULED,
+    start: '2026-07-08T12:00:00',
+    end: '2026-07-08T13:00:00'
+  }]);
+  assert.deepEqual(items.map((item) => item.status), ['missed', TASK_STATUSES.SCHEDULED]);
+  assert.ok(items.every((item) => item.task.calendarEventId === 'event-past'));
 });
 
 test('sync operations create or update only scheduled non-completed plan segments', () => {
@@ -691,6 +772,46 @@ test('sync operations create or update only scheduled non-completed plan segment
   assert.equal(operations.updates[0].eventId, 'event-2');
   assert.deepEqual(operations.deletes, []);
   assert.match(operations.updates[0].description, /PLAN_META/);
+});
+
+test('sync metadata omits runtime autoFixed fields', () => {
+  const schedule = {
+    status: 'ok',
+    segments: [{
+      taskId: 'task-autofixed',
+      taskName: 'Autofixed task',
+      status: TASK_STATUSES.SCHEDULED,
+      start: '2026-07-08T12:00:00',
+      end: '2026-07-08T13:00:00',
+      allocatedMinutes: 60
+    }]
+  };
+  const operations = buildSyncOperations({
+    schedule,
+    planDate: '2026-07-08',
+    tasks: [{
+      taskId: 'task-autofixed',
+      taskName: 'Autofixed task',
+      taskType: 'custom',
+      desiredMinutes: 90,
+      minimumMinutes: 30,
+      importance: 4,
+      status: TASK_STATUSES.SCHEDULED,
+      fixed: false,
+      autoFixed: true,
+      plannedStart: '2026-07-08T09:00:00',
+      plannedEnd: '2026-07-08T10:00:00',
+      calendarEventId: 'event-autofixed'
+    }],
+    existingPlanTasks: []
+  });
+  const metadata = extractPlanMetadata(operations.updates[0].description);
+
+  assert.equal(metadata.fixed, false);
+  assert.equal('autoFixed' in metadata, false);
+  assert.equal('plannedStart' in metadata, false);
+  assert.equal('plannedEnd' in metadata, false);
+  assert.equal('calendarEventId' in metadata, false);
 });
 
 test('sync operations include completed update and do not create completed events', () => {
@@ -755,7 +876,6 @@ test('sync operations include completed update and do not create completed event
   assert.deepEqual(extractPlanMetadata(operations.updates[0].description), {
     taskId: 'done-existing',
     taskName: 'Done existing',
-    calendarEventId: 'event-done',
     actualStart: '2026-07-06T08:05:00',
     actualEnd: '2026-07-06T08:42:00',
     schemaVersion: 1,

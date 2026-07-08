@@ -177,7 +177,7 @@ export function calendarEventToPlanTask(event) {
       && plannedStart
       && plannedEnd
   ) {
-    task.fixed = true;
+    task.fixed = Boolean(metadata.fixed) && metadata.autoFixed !== true;
     task.autoFixed = true;
     task.fixedStart = timeFromDateTime(plannedStart);
     task.fixedEnd = timeFromDateTime(plannedEnd);
@@ -195,8 +195,17 @@ function legacySegmentIdFor(segment) {
 }
 
 function metadataForSegment(segment, task, planDate, segmentId, status = TASK_STATUSES.SCHEDULED) {
+  const {
+    autoFixed,
+    plannedStart,
+    plannedEnd,
+    calendarEventId,
+    localOverride,
+    ...taskMetadata
+  } = task ?? {};
+
   return {
-    ...(task ?? {}),
+    ...taskMetadata,
     schemaVersion: 1,
     app: APP_ID,
     planDate,

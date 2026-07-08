@@ -66,7 +66,7 @@ Events split into two display classes:
 
 Ordinary events are never modified or deleted by the app. They block available time and explain why some visible time cannot be scheduled.
 
-Plan-managed events remain the cross-computer source of truth for task metadata. When the app reads them back, their current Google Calendar start/end time is trusted as the current planned block.
+Plan-managed events remain the cross-computer source of truth for task metadata. When the app reads them back, their current Google Calendar start/end time is preserved as the last planned block for timeline display, completion matching, and updating the same Calendar event. It does not make a task hard fixed unless the stored task metadata already says `fixed: true`.
 
 ## Deadline Today Shortcut
 
