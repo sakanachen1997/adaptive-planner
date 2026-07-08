@@ -25,11 +25,12 @@
         <h2>日期与可用时间</h2>
         <label>计划日期 <input id="planDateInput" type="date" /></label>
         <div class="row">
-          <button id="loadCalendarButton" type="button">读取日历</button>
+          <button id="loadCalendarButton" type="button">读取并显示日历</button>
           <button id="addDefaultBlocksButton" type="button">生成默认时间块</button>
           <button id="rescheduleButton" type="button">调度</button>
           <button id="copyDebugButton" type="button">复制调试信息</button>
         </div>
+        <p class="muted">只读取 Google Calendar，不会写入、覆盖或删除日历事件。普通日历事件只作为受保护的不可用时间显示。</p>
         <div id="availableBlocks"></div>
         <button id="addBlockButton" type="button">添加可用时间块</button>
       </section>
@@ -110,9 +111,10 @@
           <div id="timelineView"></div>
           <div id="timelineDetail"></div>
         </div>
-        <h3>同步预览</h3>
+        <h3>发布到 Google Calendar</h3>
+        <p class="muted">只有点击下方按钮才会创建、更新或删除 Plan 事件。普通 Google Calendar 事件不会被 Plan 修改。</p>
         <div id="syncPreview"></div>
-        <button id="syncButton" type="button">写入 Google Calendar</button>
+        <button id="syncButton" type="button">发布计划到 Google Calendar</button>
       </section>
     </main>
 

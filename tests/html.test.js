@@ -62,3 +62,10 @@ test('day plan exposes timeline and detail containers', () => {
   assert.match(html, /id="timelineView"/);
   assert.match(html, /id="timelineDetail"/);
 });
+
+test('calendar controls distinguish read-only import from calendar publishing', () => {
+  assert.match(html, /id="loadCalendarButton"[^>]*>读取并显示日历<\/button>/);
+  assert.match(html, /只读取 Google Calendar，不会写入、覆盖或删除日历事件。/);
+  assert.match(html, /id="syncButton"[^>]*>发布计划到 Google Calendar<\/button>/);
+  assert.match(html, /只有点击下方按钮才会创建、更新或删除 Plan 事件。/);
+});

@@ -1273,13 +1273,13 @@ function renderSyncPreview() {
   }
 
   if (!state.schedule) {
-    target.textContent = '还没有同步内容。';
+    target.textContent = '还没有可发布的计划。';
     target.className = 'muted';
     return;
   }
 
   if (state.schedule.status === 'conflict') {
-    target.textContent = '解决冲突后才能同步。';
+    target.textContent = '解决冲突后才能发布到 Google Calendar。';
     target.className = 'schedule-item error';
     return;
   }
@@ -1291,7 +1291,7 @@ function renderSyncPreview() {
     planDate: state.planDate
   });
 
-  target.textContent = `同步预览：将创建 ${state.lastSyncOperations.creates.length} 个，更新 ${state.lastSyncOperations.updates.length} 个，删除 ${state.lastSyncOperations.deletes.length} 个。`;
+  target.textContent = `发布预览：将创建 ${state.lastSyncOperations.creates.length} 个 Plan 事件，更新 ${state.lastSyncOperations.updates.length} 个 Plan 事件，删除 ${state.lastSyncOperations.deletes.length} 个 Plan 事件。普通 Google Calendar 事件不会被修改。`;
   target.className = 'muted';
 }
 
@@ -1347,7 +1347,7 @@ async function loadCalendar() {
 
   try {
     state.calendarEvents = await listPrimaryEvents(timeMin, timeMax);
-    showMessage(`已读取 ${state.calendarEvents.length} 个日历事件。`);
+    showMessage(`已读取并显示 ${state.calendarEvents.length} 个日历事件。此操作没有写入 Google Calendar。`);
     recalculate();
   } catch (error) {
     showMessage(`读取日历失败：${error.message}`, true);
@@ -1356,7 +1356,7 @@ async function loadCalendar() {
 
 async function syncSchedule() {
   if (!state.schedule || state.schedule.status === 'conflict') {
-    showMessage('没有可同步的计划，或当前计划仍有冲突。', true);
+    showMessage('没有可发布的计划，或当前计划仍有冲突。', true);
     return;
   }
 
@@ -1380,10 +1380,10 @@ async function syncSchedule() {
       await deletePlanEvent(operation.eventId);
     }
 
-    showMessage(`同步完成：创建 ${operations.creates.length} 个，更新 ${operations.updates.length} 个，删除 ${operations.deletes.length} 个。`);
+    showMessage(`发布完成：创建 ${operations.creates.length} 个 Plan 事件，更新 ${operations.updates.length} 个 Plan 事件，删除 ${operations.deletes.length} 个 Plan 事件。`);
     await loadCalendar();
   } catch (error) {
-    showMessage(`同步失败：${error.message}`, true);
+    showMessage(`发布失败：${error.message}`, true);
   }
 }
 

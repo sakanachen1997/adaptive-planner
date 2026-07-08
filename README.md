@@ -85,6 +85,8 @@ https://www.googleapis.com/auth/calendar.events
 
 ## 日历数据规则
 
+- `读取并显示日历` 是只读操作：它只拉取当天主日历事件，在页面时间轴中展示，并把普通日历事件作为受保护时间块参与调度。
+- `发布计划到 Google Calendar` 才会写入主日历：它只会创建、更新或删除 Plan 自己管理的 `[Plan]` 事件。
 - 普通 Google Calendar 事件没有 `PLAN_META`，应用只把它们视为受保护的不可用时间。
 - 应用只会创建、更新、删除元数据有效的 `[Plan]` 事件。
 - 计划任务属性保存在事件 description 的 JSON 中。
