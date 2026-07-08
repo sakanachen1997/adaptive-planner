@@ -7,6 +7,7 @@ import {
   calendarEventToPlanTask,
   calendarEventToProtectedBlock,
   actualDurationForTask,
+  buildDebugReport,
   conflictSummaryLines,
   deadlineLabel,
   editableTasksForSchedule,
@@ -98,6 +99,62 @@ test('removeTaskForReschedule marks a calendar-backed task skipped so sync delet
   assert.equal(updated[0].status, TASK_STATUSES.SKIPPED);
   assert.equal(updated[0].localOverride, true);
   assert.equal(updated[0].calendarEventId, 'event-1');
+});
+
+test('buildDebugReport serializes the full scheduling state as readable JSON', () => {
+  const report = buildDebugReport({
+    planDate: '2026-07-08',
+    now: '2026-07-08T12:23:00',
+    availableBlocks: [
+      { start: '2026-07-08T09:00:00', end: '2026-07-08T18:00:00', context: 'work' }
+    ],
+    protectedBlocks: [
+      { start: '2026-07-08T10:00:00', end: '2026-07-08T10:30:00', summary: '例会' }
+    ],
+    tasks: [
+      {
+        taskId: 'task-1',
+        taskName: '买菜',
+        desiredMinutes: 40,
+        minimumMinutes: 40,
+        deadline: '2026-07-08T21:00:00',
+        executionContext: 'home',
+        status: 'pending'
+      }
+    ],
+    schedule: {
+      status: 'conflict',
+      conflict: {
+        kind: 'placement_failure',
+        availableMinutes: 677,
+        requiredMinimumMinutes: 260,
+        belowMinimum: [{ taskId: 'task-1', taskName: '买菜', minimumMinutes: 40, scheduledMinutes: 0 }]
+      }
+    }
+  });
+
+  const parsed = JSON.parse(report);
+
+  assert.equal(parsed.app, 'adaptive-planner');
+  assert.equal(parsed.planDate, '2026-07-08');
+  assert.equal(parsed.now, '2026-07-08T12:23:00');
+  assert.equal(parsed.availableBlocks.length, 1);
+  assert.equal(parsed.protectedBlocks[0].summary, '例会');
+  assert.equal(parsed.tasks[0].taskName, '买菜');
+  assert.equal(parsed.schedule.conflict.kind, 'placement_failure');
+  assert.ok(report.includes('\n'));
+});
+
+test('buildDebugReport tolerates missing schedule and empty lists', () => {
+  const parsed = JSON.parse(buildDebugReport({
+    planDate: '2026-07-08',
+    now: '2026-07-08T12:23:00'
+  }));
+
+  assert.deepEqual(parsed.tasks, []);
+  assert.deepEqual(parsed.availableBlocks, []);
+  assert.deepEqual(parsed.protectedBlocks, []);
+  assert.equal(parsed.schedule, null);
 });
 
 test('deadlineLabel shows the time for a same-day deadline', () => {

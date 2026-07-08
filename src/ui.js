@@ -395,6 +395,30 @@ export function actualDurationForTask(schedule, taskId) {
   return schedule?.durationPlan?.allocations?.find((item) => item.taskId === taskId) ?? null;
 }
 
+export function buildDebugReport({
+  planDate,
+  now,
+  availableBlocks = [],
+  protectedBlocks = [],
+  tasks = [],
+  schedule = null
+}) {
+  return JSON.stringify(
+    {
+      app: APP_ID,
+      generatedFor: '调试导出：粘贴给助手以分析调度问题',
+      planDate,
+      now,
+      availableBlocks,
+      protectedBlocks,
+      tasks,
+      schedule
+    },
+    null,
+    2
+  );
+}
+
 export function deadlineLabel(deadline, planDate) {
   if (!deadline) {
     return '';
@@ -1311,6 +1335,56 @@ function addAvailableBlock() {
   recalculate();
 }
 
+function currentDebugReport() {
+  return buildDebugReport({
+    planDate: state.planDate,
+    now: localNowString(),
+    availableBlocks: concreteAvailableBlocks(),
+    protectedBlocks: protectedBlocksFromCalendar(),
+    tasks: allTasks(),
+    schedule: state.schedule
+  });
+}
+
+function copyTextFallback(text) {
+  const textarea = document.createElement('textarea');
+  textarea.value = text;
+  textarea.setAttribute('readonly', '');
+  textarea.style.position = 'fixed';
+  textarea.style.left = '-9999px';
+  document.body.append(textarea);
+  textarea.select();
+
+  let copied = false;
+  try {
+    copied = document.execCommand('copy');
+  } catch {
+    copied = false;
+  }
+
+  textarea.remove();
+  return copied;
+}
+
+async function copyDebugReport() {
+  const report = currentDebugReport();
+
+  try {
+    await navigator.clipboard.writeText(report);
+    showMessage('调试信息已复制到剪贴板，可直接粘贴给助手分析。');
+    return;
+  } catch {
+    // clipboard API 不可用时走隐藏 textarea 兜底
+  }
+
+  if (copyTextFallback(report)) {
+    showMessage('调试信息已复制到剪贴板，可直接粘贴给助手分析。');
+  } else {
+    showMessage('复制失败：请打开浏览器控制台，手动复制 window.__planDebugReport 的内容。', true);
+    globalThis.__planDebugReport = report;
+  }
+}
+
 function removeTask(key) {
   const task = findEditableTaskByKey(key);
 
@@ -1365,6 +1439,7 @@ function wireEvents() {
   element('loadCalendarButton')?.addEventListener('click', loadCalendar);
   element('addDefaultBlocksButton')?.addEventListener('click', fillDefaultBlocks);
   element('rescheduleButton')?.addEventListener('click', recalculate);
+  element('copyDebugButton')?.addEventListener('click', copyDebugReport);
   element('syncButton')?.addEventListener('click', syncSchedule);
   element('addBlockButton')?.addEventListener('click', addAvailableBlock);
   element('availableBlocks')?.addEventListener('input', handleAvailableBlockInput);

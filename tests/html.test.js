@@ -30,3 +30,7 @@ test('page exposes a persistent scheduling button instead of a compression actio
   assert.match(html, /id="rescheduleButton"[^>]*>调度<\/button>/);
   assert.doesNotMatch(html, />一键按比例压缩<\/button>/);
 });
+
+test('page exposes a debug report copy button', () => {
+  assert.match(html, /id="copyDebugButton"[^>]*>复制调试信息<\/button>/);
+});
