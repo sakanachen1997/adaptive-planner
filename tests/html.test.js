@@ -69,3 +69,8 @@ test('calendar controls distinguish read-only import from calendar publishing', 
   assert.match(html, /id="syncButton"[^>]*>发布计划到 Google Calendar<\/button>/);
   assert.match(html, /只有点击下方按钮才会创建、更新或删除 Plan 事件。/);
 });
+
+test('page cache-busts static assets after behavior changes', () => {
+  assert.match(html, /href="\.\/src\/styles\.css\?v=\d{8}-missed-timeline"/);
+  assert.match(html, /src="\.\/src\/main\.js\?v=\d{8}-missed-timeline"/);
+});

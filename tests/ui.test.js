@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { APP_ID, TASK_STATUSES } from '../src/models.js';
 import { buildDescription, extractPlanMetadata } from '../src/metadata.js';
+import { scheduleDay } from '../src/scheduler.js';
 import {
   buildSyncOperations,
   calendarEventToPlanTask,
@@ -599,6 +600,50 @@ test('past unfinished calendar Plan task remains visible as missed timeline item
   assert.equal(items[0].start, '2026-07-08T09:00:00');
   assert.equal(items[0].end, '2026-07-08T10:00:00');
   assert.equal(items[0].editable, true);
+});
+
+test('rescheduled day still shows past unfinished Calendar Plan task on timeline', () => {
+  const task = calendarEventToPlanTask({
+    id: 'event-past',
+    summary: '[Plan] Past task',
+    description: buildDescription('Created by planner', {
+      schemaVersion: 1,
+      app: APP_ID,
+      taskId: 'task-past',
+      taskName: 'Past task',
+      taskType: 'custom',
+      desiredMinutes: 60,
+      minimumMinutes: 30,
+      importance: 3,
+      status: TASK_STATUSES.SCHEDULED,
+      planDate: '2026-07-08'
+    }),
+    start: { dateTime: '2026-07-08T09:00:00+02:00' },
+    end: { dateTime: '2026-07-08T10:00:00+02:00' }
+  });
+  const schedule = scheduleDay({
+    planDate: '2026-07-08',
+    now: '2026-07-08T12:00:00',
+    availableBlocks: [{
+      start: '2026-07-08T08:00:00',
+      end: '2026-07-08T18:00:00',
+      context: 'any'
+    }],
+    protectedBlocks: [],
+    tasks: [task]
+  });
+  const items = buildTimelineItems({
+    schedule,
+    protectedBlocks: [],
+    tasks: [task],
+    now: '2026-07-08T12:00:00'
+  });
+
+  assert.equal(schedule.status, 'ok');
+  assert.deepEqual(schedule.segments, []);
+  assert.equal(items.length, 1);
+  assert.equal(items[0].status, 'missed');
+  assert.equal(items[0].task.calendarEventId, 'event-past');
 });
 
 test('sync operations create or update only scheduled non-completed plan segments', () => {
