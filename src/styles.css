@@ -115,7 +115,7 @@ button {
   color: var(--ok);
 }
 
-.schedule-item.compressed {
+.schedule-item.duration-plan {
   color: var(--ok);
 }
 

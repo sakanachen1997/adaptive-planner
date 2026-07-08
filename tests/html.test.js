@@ -25,3 +25,8 @@ test('task form fields have visible labels', () => {
     );
   }
 });
+
+test('page exposes a persistent scheduling button instead of a compression action', () => {
+  assert.match(html, /id="rescheduleButton"[^>]*>调度<\/button>/);
+  assert.doesNotMatch(html, />一键按比例压缩<\/button>/);
+});

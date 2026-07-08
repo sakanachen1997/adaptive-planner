@@ -6,11 +6,9 @@ import {
   buildSyncOperations,
   calendarEventToPlanTask,
   calendarEventToProtectedBlock,
-  compressionAllocationForTask,
-  compressionModeAfterPlanInputChange,
+  actualDurationForTask,
   editableTasksForSchedule,
   formInputForTask,
-  shouldOfferCompression,
   shouldShowRecoveryActions,
   mergePlanTasks,
   resetCalendarStateForDateChange,
@@ -113,56 +111,36 @@ test('mergePlanTasks prefers edited local copy of a Calendar plan task', () => {
   assert.equal(merged[0].taskName, 'Edited version');
 });
 
-test('compression conflict presentation shows the one-click button before recovery actions', () => {
+test('minimum overflow conflict presentation shows recovery actions', () => {
   const schedule = {
     status: 'conflict',
     conflict: {
-      kind: 'desired_overflow',
-      compressionAvailable: true,
-      actions: []
-    }
-  };
-
-  assert.equal(shouldOfferCompression(schedule), true);
-  assert.equal(shouldShowRecoveryActions(schedule), false);
-});
-
-test('below-minimum compressed conflict presentation shows recovery actions', () => {
-  const schedule = {
-    status: 'conflict',
-    conflict: {
-      kind: 'compressed_below_minimum',
-      compressionAvailable: false,
+      kind: 'minimum_overflow',
       actions: ['增加可用时间后重排']
     }
   };
 
-  assert.equal(shouldOfferCompression(schedule), false);
   assert.equal(shouldShowRecoveryActions(schedule), true);
 });
 
-test('compressionAllocationForTask reads the compressed allocation by task id', () => {
+test('actualDurationForTask reads computed actual duration by task id', () => {
   const schedule = {
     status: 'ok',
-    compression: {
+    durationPlan: {
       allocations: [
-        { taskId: 'task-1', desiredMinutes: 120, allocatedMinutes: 80 },
-        { taskId: 'task-2', desiredMinutes: 60, allocatedMinutes: 40 }
+        { taskId: 'task-1', desiredMinutes: 120, minimumMinutes: 30, actualMinutes: 80 },
+        { taskId: 'task-2', desiredMinutes: 60, minimumMinutes: 20, actualMinutes: 40 }
       ]
     }
   };
 
-  assert.deepEqual(compressionAllocationForTask(schedule, 'task-2'), {
+  assert.deepEqual(actualDurationForTask(schedule, 'task-2'), {
     taskId: 'task-2',
     desiredMinutes: 60,
-    allocatedMinutes: 40
+    minimumMinutes: 20,
+    actualMinutes: 40
   });
-  assert.equal(compressionAllocationForTask(schedule, 'missing'), null);
-});
-
-test('plan input changes exit proportional compression mode', () => {
-  assert.equal(compressionModeAfterPlanInputChange(true), false);
-  assert.equal(compressionModeAfterPlanInputChange(false), false);
+  assert.equal(actualDurationForTask(schedule, 'missing'), null);
 });
 
 test('plan calendar events become tasks and retain their calendar event id', () => {

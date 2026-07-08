@@ -8,6 +8,18 @@
 
 **Tech Stack:** HTML, CSS, JavaScript ES modules, Google Identity Services, Google Calendar API v3, Node.js `node:test`, GitHub Pages static hosting.
 
+## Current Scheduling Model
+
+The scheduler computes actual task duration as a normal part of every `调度` run.
+
+- `desiredMinutes` is an ideal target and weight input.
+- `minimumMinutes` is the hard lower bound.
+- `actualMinutes` is computed by the scheduler and used for placement.
+- Incompressible tasks are represented by `minimumMinutes === desiredMinutes`.
+- The app reports conflict only when minimum durations cannot fit, or when placement constraints make the minimum impossible.
+- The UI must always show desired, minimum, and actual duration for scheduled tasks.
+- There is no separate one-click compression flow in the core model.
+
 ---
 
 ## File Structure
@@ -86,7 +98,7 @@
         <div class="row">
           <button id="loadCalendarButton">读取日历</button>
           <button id="addDefaultBlocksButton">生成默认时间块</button>
-          <button id="rescheduleButton">重新计算</button>
+          <button id="rescheduleButton">调度</button>
         </div>
         <div id="availableBlocks"></div>
         <button id="addBlockButton">添加可用时间块</button>
@@ -906,14 +918,14 @@ function allocateDurations(tasks, capacityMinutes, now) {
   const flexibleCapacity = Math.max(0, capacityMinutes - minimumTotal);
   const weights = tasks.map((task) => ({
     task,
-    weight: calculatePriority(task, now) * Math.max(1, task.desiredMinutes)
+    desiredExtra: Math.max(0, task.desiredMinutes - task.minimumMinutes),
+    weight: calculatePriority(task, now) * Math.max(0, task.desiredMinutes - task.minimumMinutes)
   }));
   const weightTotal = weights.reduce((sum, item) => sum + item.weight, 0) || 1;
 
-  return new Map(weights.map(({ task, weight }) => {
-    const desiredExtra = Math.max(0, task.desiredMinutes - task.minimumMinutes);
-    const proportionalExtra = Math.floor((weight / weightTotal) * flexibleCapacity);
-    return [task.taskId, task.minimumMinutes + Math.min(desiredExtra, proportionalExtra)];
+  return new Map(weights.map(({ task, weight, desiredExtra }) => {
+    const weightedExtra = Math.floor((weight / weightTotal) * flexibleCapacity);
+    return [task.taskId, task.minimumMinutes + Math.min(desiredExtra, weightedExtra)];
   }));
 }
 
@@ -1587,7 +1599,7 @@ Expected:
 - App loads at `http://localhost:5173`.
 - UI text is Chinese.
 - Default time blocks render.
-- Adding an example task and pressing `重新计算` shows a schedule row.
+- Adding an example task and pressing `调度` shows a schedule row with desired, minimum, and actual duration.
 - A minimum-duration conflict shows the three agreed recovery actions.
 
 - [ ] **Step 3: Review Git status**

@@ -77,13 +77,12 @@ test('detects hard minimum duration conflict', () => {
   ]);
 });
 
-test('asks for proportional compression when desired work exceeds available time', () => {
+test('schedules desired overflow by computing actual durations instead of reporting conflict', () => {
   const result = scheduleDay({
     planDate: PLAN_DATE,
     now: NOW,
     availableBlocks: [block('09:00', '10:30')],
     protectedBlocks: [],
-    requireCompressionConfirmation: true,
     tasks: [
       task({
         taskName: '英语',
@@ -100,56 +99,86 @@ test('asks for proportional compression when desired work exceeds available time
     ]
   });
 
-  assert.equal(result.status, 'conflict');
-  assert.equal(result.conflict.kind, 'desired_overflow');
-  assert.equal(result.conflict.availableMinutes, 90);
-  assert.equal(result.conflict.desiredMinutes, 180);
-  assert.equal(result.conflict.compressionAvailable, true);
-  assert.deepEqual(result.conflict.actions, []);
-});
-
-test('proportional compression schedules tasks by desired-time ratio when minimums still hold', () => {
-  const result = scheduleDay({
-    planDate: PLAN_DATE,
-    now: NOW,
-    availableBlocks: [block('09:00', '10:30')],
-    protectedBlocks: [],
-    allocationMode: 'proportional',
-    tasks: [
-      task({
-        taskName: '英语',
-        desiredMinutes: 120,
-        minimumMinutes: 20,
-        importance: 1
-      }),
-      task({
-        taskName: '数学',
-        desiredMinutes: 60,
-        minimumMinutes: 20,
-        importance: 5
-      })
-    ]
-  });
-
-  const allocations = new Map(result.compression.allocations.map((item) => [
+  const allocations = new Map(result.durationPlan.allocations.map((item) => [
     item.taskName,
-    item.allocatedMinutes
+    item.actualMinutes
   ]));
 
   assert.equal(result.status, 'ok');
-  assert.equal(result.compression.desiredMinutes, 180);
-  assert.equal(result.compression.availableMinutes, 90);
-  assert.equal(allocations.get('英语'), 56);
-  assert.equal(allocations.get('数学'), 34);
+  assert.equal(result.durationPlan.desiredMinutes, 180);
+  assert.equal(result.durationPlan.availableMinutes, 90);
+  assert.equal(allocations.get('英语') + allocations.get('数学'), 90);
 });
 
-test('proportional compression protects minimum durations before compressing flexible time', () => {
+test('actual duration model preserves incompressible tasks and distributes remaining time to flexible tasks', () => {
+  const result = scheduleDay({
+    planDate: PLAN_DATE,
+    now: NOW,
+    availableBlocks: [block('18:00', '23:00', CONTEXTS.HOME)],
+    protectedBlocks: [],
+    tasks: [
+      task({
+        taskName: 'A',
+        desiredMinutes: 70,
+        minimumMinutes: 70,
+        executionContext: CONTEXTS.HOME,
+        importance: 3
+      }),
+      task({
+        taskName: 'B',
+        desiredMinutes: 180,
+        minimumMinutes: 120,
+        minSegmentMinutes: 10,
+        executionContext: CONTEXTS.HOME,
+        importance: 3
+      }),
+      task({
+        taskName: 'C',
+        desiredMinutes: 30,
+        minimumMinutes: 10,
+        minSegmentMinutes: 10,
+        executionContext: CONTEXTS.HOME,
+        importance: 3
+      }),
+      task({
+        taskName: 'D',
+        desiredMinutes: 40,
+        minimumMinutes: 20,
+        minSegmentMinutes: 10,
+        executionContext: CONTEXTS.HOME,
+        importance: 3
+      }),
+      task({
+        taskName: 'E',
+        desiredMinutes: 30,
+        minimumMinutes: 30,
+        executionContext: CONTEXTS.HOME,
+        importance: 3
+      })
+    ]
+  });
+
+  const allocations = new Map(result.durationPlan.allocations.map((item) => [
+    item.taskName,
+    item.actualMinutes
+  ]));
+
+  assert.equal(result.status, 'ok');
+  assert.equal(result.durationPlan.desiredMinutes, 350);
+  assert.equal(result.durationPlan.availableMinutes, 300);
+  assert.equal(allocations.get('A'), 70);
+  assert.equal(allocations.get('B'), 152);
+  assert.equal(allocations.get('C'), 19);
+  assert.equal(allocations.get('D'), 29);
+  assert.equal(allocations.get('E'), 30);
+});
+
+test('actual duration model protects minimum durations before distributing flexible time', () => {
   const result = scheduleDay({
     planDate: PLAN_DATE,
     now: NOW,
     availableBlocks: [block('09:00', '10:00')],
     protectedBlocks: [],
-    allocationMode: 'proportional',
     tasks: [
       task({
         taskName: '英语',
@@ -168,9 +197,9 @@ test('proportional compression protects minimum durations before compressing fle
     ]
   });
 
-  const allocations = new Map(result.compression.allocations.map((item) => [
+  const allocations = new Map(result.durationPlan.allocations.map((item) => [
     item.taskName,
-    item.allocatedMinutes
+    item.actualMinutes
   ]));
 
   assert.equal(result.status, 'ok');
@@ -178,13 +207,12 @@ test('proportional compression protects minimum durations before compressing fle
   assert.equal(allocations.get('数学'), 15);
 });
 
-test('proportional compression takes extra time mostly from flexible tasks', () => {
+test('actual duration model takes extra time mostly from flexible tasks', () => {
   const result = scheduleDay({
     planDate: PLAN_DATE,
     now: NOW,
     availableBlocks: [block('09:00', '10:20')],
     protectedBlocks: [],
-    allocationMode: 'proportional',
     tasks: [
       task({
         taskName: '弹性大任务',
@@ -201,9 +229,9 @@ test('proportional compression takes extra time mostly from flexible tasks', () 
     ]
   });
 
-  const allocations = new Map(result.compression.allocations.map((item) => [
+  const allocations = new Map(result.durationPlan.allocations.map((item) => [
     item.taskName,
-    item.allocatedMinutes
+    item.actualMinutes
   ]));
 
   assert.equal(result.status, 'ok');
@@ -211,7 +239,7 @@ test('proportional compression takes extra time mostly from flexible tasks', () 
   assert.equal(allocations.get('弹性小任务'), 20);
 });
 
-test('proportional compression reduces non-splittable actual duration to fit an available block', () => {
+test('actual duration model reduces non-splittable actual duration to fit an available block', () => {
   const result = scheduleDay({
     planDate: PLAN_DATE,
     now: NOW,
@@ -220,7 +248,6 @@ test('proportional compression reduces non-splittable actual duration to fit an 
       block('10:00', '15:15', CONTEXTS.HOME)
     ],
     protectedBlocks: [],
-    allocationMode: 'proportional',
     tasks: [
       task({
         taskName: '编码',
@@ -242,22 +269,21 @@ test('proportional compression reduces non-splittable actual duration to fit an 
   });
 
   const codingSegments = scheduledSegments(result).filter((segment) => segment.taskName === '编码');
-  const codingCompression = result.compression.allocations.find((item) => item.taskName === '编码');
+  const codingDuration = result.durationPlan.allocations.find((item) => item.taskName === '编码');
 
   assert.equal(result.status, 'partial');
-  assert.equal(result.compression.availableMinutes, 375);
+  assert.equal(result.durationPlan.availableMinutes, 375);
   assert.equal(codingSegments.length, 1);
   assert.equal(codingSegments[0].allocatedMinutes, 60);
-  assert.equal(codingCompression.allocatedMinutes, 60);
+  assert.equal(codingDuration.actualMinutes, 60);
 });
 
-test('proportional compression reports conflict only when minimums cannot fit', () => {
+test('actual duration model reports conflict only when minimums cannot fit', () => {
   const result = scheduleDay({
     planDate: PLAN_DATE,
     now: NOW,
     availableBlocks: [block('09:00', '09:50')],
     protectedBlocks: [],
-    allocationMode: 'proportional',
     tasks: [
       task({
         taskName: '英语',

@@ -152,7 +152,8 @@ function allocateDurations(tasks, capacityMinutes, now) {
     desiredExtra: Math.max(0, task.effectiveDesiredMinutes - task.effectiveMinimumMinutes),
     fraction: 0,
     priority: calculatePriority(task, now),
-    weight: calculatePriority(task, now) * Math.max(1, task.effectiveDesiredMinutes)
+    weight: calculatePriority(task, now)
+      * Math.max(0, task.effectiveDesiredMinutes - task.effectiveMinimumMinutes)
   }));
   const totalWeight = weightedTasks.reduce((sum, item) => sum + item.weight, 0) || 1;
   let distributedExtra = 0;
@@ -194,24 +195,26 @@ function allocateDurations(tasks, capacityMinutes, now) {
   return new Map(weightedTasks.map(({ task, duration }) => [task.taskId, duration]));
 }
 
-function compressionSummary(tasks, allocations, availableMinutes) {
+function durationPlanSummary(tasks, allocations, availableMinutes) {
   const desiredMinutes = tasks.reduce((sum, task) => sum + task.effectiveDesiredMinutes, 0);
+  const minimumMinutes = tasks.reduce((sum, task) => sum + task.effectiveMinimumMinutes, 0);
 
   return {
     desiredMinutes,
+    minimumMinutes,
     availableMinutes,
     allocations: tasks.map((task) => ({
       taskId: task.taskId,
       taskName: task.taskName,
       desiredMinutes: task.effectiveDesiredMinutes,
       minimumMinutes: task.effectiveMinimumMinutes,
-      allocatedMinutes: allocations.get(task.taskId) ?? 0
+      actualMinutes: allocations.get(task.taskId) ?? 0
     }))
   };
 }
 
-function withActualCompressionAllocations(compression, segments) {
-  if (!compression) {
+function withPlacedActualDurations(durationPlan, segments) {
+  if (!durationPlan) {
     return null;
   }
 
@@ -229,73 +232,13 @@ function withActualCompressionAllocations(compression, segments) {
   }
 
   return {
-    ...compression,
-    allocations: compression.allocations.map((item) => ({
+    ...durationPlan,
+    allocations: durationPlan.allocations.map((item) => ({
       ...item,
-      plannedMinutes: item.allocatedMinutes,
-      allocatedMinutes: actualByTask.get(item.taskId) ?? 0
+      plannedMinutes: item.actualMinutes,
+      actualMinutes: actualByTask.get(item.taskId) ?? 0
     }))
   };
-}
-
-function allocateProportionalDurations(tasks, capacityMinutes, now) {
-  const requiredMinimum = tasks.reduce((sum, task) => (
-    sum + task.effectiveMinimumMinutes
-  ), 0);
-  const flexibleCapacity = Math.max(0, capacityMinutes - requiredMinimum);
-  const desiredExtraTotal = tasks.reduce((sum, task) => (
-    sum + Math.max(0, task.effectiveDesiredMinutes - task.effectiveMinimumMinutes)
-  ), 0);
-  const usableExtra = Math.min(flexibleCapacity, desiredExtraTotal);
-  const weightedTasks = tasks.map((task) => ({
-    task,
-    duration: task.effectiveMinimumMinutes,
-    desiredExtra: Math.max(0, task.effectiveDesiredMinutes - task.effectiveMinimumMinutes),
-    fraction: 0,
-    priority: calculatePriority(task, now)
-  }));
-
-  if (usableExtra <= 0 || desiredExtraTotal <= 0) {
-    return new Map(weightedTasks.map(({ task, duration }) => [task.taskId, duration]));
-  }
-
-  let distributedExtra = 0;
-
-  for (const item of weightedTasks) {
-    const exactExtra = (item.desiredExtra / desiredExtraTotal) * usableExtra;
-    const flooredExtra = Math.floor(exactExtra);
-    const extra = Math.min(item.desiredExtra, flooredExtra);
-    item.duration += extra;
-    item.fraction = exactExtra - flooredExtra;
-    distributedExtra += extra;
-  }
-
-  let leftover = usableExtra - distributedExtra;
-
-  while (leftover > 0) {
-    const candidates = weightedTasks
-      .filter((item) => item.duration < item.task.effectiveDesiredMinutes)
-      .sort((left, right) => (
-        right.fraction - left.fraction
-          || right.priority - left.priority
-          || left.task.taskName.localeCompare(right.task.taskName)
-      ));
-
-    if (candidates.length === 0) {
-      break;
-    }
-
-    for (const item of candidates) {
-      if (leftover <= 0) {
-        break;
-      }
-
-      item.duration += 1;
-      leftover -= 1;
-    }
-  }
-
-  return new Map(weightedTasks.map(({ task, duration }) => [task.taskId, duration]));
 }
 
 function segmentForTask(task, start, minutes) {
@@ -459,8 +402,6 @@ function conflictResult(
   {
     kind = 'minimum_overflow',
     desiredMinutes = null,
-    compressionAvailable = false,
-    compression = null,
     belowMinimum = [],
     actions = [...CONFLICT_ACTIONS]
   } = {}
@@ -474,8 +415,6 @@ function conflictResult(
       availableMinutes,
       requiredMinimumMinutes,
       desiredMinutes,
-      compressionAvailable,
-      compression,
       belowMinimum,
       actions
     }
@@ -487,9 +426,7 @@ export function scheduleDay({
   now,
   availableBlocks = [],
   protectedBlocks = [],
-  tasks = [],
-  allocationMode = 'weighted',
-  requireCompressionConfirmation = false
+  tasks = []
 }) {
   const completed = completedSegments(tasks);
   const active = activeTasks(tasks).map((task) => taskWithEffectiveWork(task, planDate, now));
@@ -509,41 +446,11 @@ export function scheduleDay({
     return conflictResult(planDate, completed, availableMinutes, requiredMinimumMinutes);
   }
 
-  if (
-    requireCompressionConfirmation
-      && allocationMode !== 'proportional'
-      && desiredMinutes > availableMinutes
-  ) {
-    return conflictResult(planDate, completed, availableMinutes, requiredMinimumMinutes, {
-      kind: 'desired_overflow',
-      desiredMinutes,
-      compressionAvailable: true,
-      actions: []
-    });
-  }
-
   const schedulableTasks = active.filter((task) => (
     task.effectiveDesiredMinutes > 0 || fixedFutureInterval(task, planDate, now)
   ));
-  const allocations = allocationMode === 'proportional'
-    ? allocateProportionalDurations(schedulableTasks, availableMinutes, now)
-    : allocateDurations(schedulableTasks, availableMinutes, now);
-  const compression = allocationMode === 'proportional'
-    ? compressionSummary(schedulableTasks, allocations, availableMinutes)
-    : null;
-  const belowMinimum = compression?.allocations.filter((item) => (
-    item.allocatedMinutes < item.minimumMinutes
-  )) ?? [];
-
-  if (belowMinimum.length > 0) {
-    return conflictResult(planDate, completed, availableMinutes, requiredMinimumMinutes, {
-      kind: 'compressed_below_minimum',
-      desiredMinutes,
-      compression,
-      belowMinimum,
-      actions: [...CONFLICT_ACTIONS]
-    });
-  }
+  const allocations = allocateDurations(schedulableTasks, availableMinutes, now);
+  const durationPlan = durationPlanSummary(schedulableTasks, allocations, availableMinutes);
 
   let blocks = available.map((block) => ({ ...block }));
   const orderedTasks = [...schedulableTasks].sort(priorityDescending(now));
@@ -603,6 +510,6 @@ export function scheduleDay({
     planDate,
     segments: sortSegments([...completed, ...scheduled]),
     unscheduled,
-    compression: withActualCompressionAllocations(compression, scheduled)
+    durationPlan: withPlacedActualDurations(durationPlan, scheduled)
   };
 }

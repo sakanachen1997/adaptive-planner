@@ -91,7 +91,7 @@ If the user manually drags or edits a Plan event in Google Calendar, the app tru
 - Manual available time blocks with context labels.
 - Default workday/home-time rules that can be overridden per day.
 - Task creation, editing, deletion, completion, and rescheduling.
-- Automatic proportional duration allocation under hard minimum-duration constraints.
+- Automatic actual-duration allocation under hard minimum-duration constraints.
 - Automatic schedule generation using priority, urgency, desired duration, energy demand, circadian fit, execution context, splittability, and fixed time blocks.
 - Conflict reporting with concrete recovery actions.
 - Completed tasks are preserved as actual time records.
@@ -129,8 +129,8 @@ Each task has:
 
 - Task name.
 - Task type.
-- Desired duration in minutes.
-- Minimum duration in minutes.
+- Desired duration in minutes. This is a planning weight and ideal target, not a guaranteed scheduled duration.
+- Minimum duration in minutes. This is a hard lower bound.
 - Importance from 1 to 5.
 - Optional deadline.
 - Execution context: `任意时间`, `仅工作时间`, `仅下班后`, or custom time window.
@@ -205,24 +205,38 @@ The first version does not require the user to manually define a custom energy c
 10. Calculate available capacity after fixed events and protected ordinary events.
 11. Check hard minimum durations.
 12. If minimum durations cannot fit, stop and show a conflict panel.
-13. Allocate remaining task durations proportionally using weighted desired duration and priority.
+13. Compute an actual duration for every schedulable task.
 14. Place tasks into compatible time blocks using context, energy fit, fixed constraints, splittability, and minimum segment length.
 15. Insert 5-10 minute buffers between high/medium cognitive tasks by default.
 16. Buffer blocks are internal gaps by default and are not written to Google Calendar unless the user enables that setting.
 17. Show a sync preview before writing changes to Google Calendar.
 18. Create/update/delete only Plan-managed events needed to match the accepted schedule.
 
-## Proportional Duration Behavior
+## Actual Duration Behavior
 
-If desired task durations exceed available time, the app rescales durations according to task weights.
+The `调度` button is the normal scheduling action. Pressing it recomputes both task order and actual task duration.
+
+Desired duration is an input to priority and allocation. It is not a commitment that must fit in the day.
+
+Actual duration is computed as follows:
+
+1. Reserve every active task's minimum duration.
+2. If the sum of minimum durations is greater than available time, report a conflict.
+3. Treat tasks whose minimum duration equals desired duration as incompressible.
+4. Distribute remaining time across flexible tasks using desired-minus-minimum slack, importance, deadline urgency, task type, and other priority signals.
+5. Use the computed actual duration for schedule placement.
+
+The day plan should always show each task's desired duration, minimum duration, and actual duration.
 
 Example:
 
-- Available time: 500 minutes.
-- Desired total: 630 minutes.
-- Each task receives a calculated share based on desired duration and priority.
+- A: incompressible, 70 minutes.
+- B: desired 180 minutes, minimum 120 minutes.
+- C: desired 30 minutes, minimum 10 minutes.
+- D: desired 40 minutes, minimum 20 minutes.
+- E: incompressible, 30 minutes.
 
-Minimum duration is a hard lower bound. The app does not silently compress a task below its minimum duration.
+If available time is lower than the ideal total but higher than the minimum total, A and E keep their fixed durations while B/C/D receive computed actual durations.
 
 ## Conflict Handling
 
@@ -329,7 +343,7 @@ Automated tests should cover pure logic:
 - Ordinary events are protected.
 - Existing events subtract from available time.
 - Minimum duration conflicts are detected.
-- Desired durations are proportionally rescaled.
+- Actual durations are computed from desired duration, minimum duration, priority, urgency, and available capacity.
 - Fixed tasks occupy time before flexible tasks.
 - Context constraints prevent work-only tasks from being placed after work and home-only tasks from being placed during work.
 - Splittable tasks can fill short gaps while non-splittable tasks cannot.
