@@ -8,6 +8,7 @@ import {
   calendarEventToProtectedBlock,
   actualDurationForTask,
   conflictSummaryLines,
+  deadlineLabel,
   editableTasksForSchedule,
   removeTaskForReschedule,
   formInputForTask,
@@ -97,6 +98,19 @@ test('removeTaskForReschedule marks a calendar-backed task skipped so sync delet
   assert.equal(updated[0].status, TASK_STATUSES.SKIPPED);
   assert.equal(updated[0].localOverride, true);
   assert.equal(updated[0].calendarEventId, 'event-1');
+});
+
+test('deadlineLabel shows the time for a same-day deadline', () => {
+  assert.equal(deadlineLabel('2026-07-08T19:30:00', '2026-07-08'), '截止 19:30');
+});
+
+test('deadlineLabel includes the date when the deadline is on another day', () => {
+  assert.equal(deadlineLabel('2026-07-09T19:30', '2026-07-08'), '截止 2026-07-09 19:30');
+});
+
+test('deadlineLabel is empty when no deadline is set', () => {
+  assert.equal(deadlineLabel(null, '2026-07-08'), '');
+  assert.equal(deadlineLabel('', '2026-07-08'), '');
 });
 
 test('formInputForTask preserves task fields as form-ready values', () => {
@@ -252,10 +266,48 @@ test('plan calendar events become tasks and retain their calendar event id', () 
     plannedStart: '2026-07-06T09:00:00',
     plannedEnd: '2026-07-06T10:00:00',
     fixed: true,
+    autoFixed: true,
     fixedStart: '09:00',
     fixedEnd: '10:00',
     calendarEventId: 'event-1'
   });
+});
+
+test('formInputForTask does not pre-check fixed for auto-locked calendar tasks', () => {
+  const input = formInputForTask({
+    taskName: 'Synced',
+    taskType: '自定义',
+    desiredMinutes: 60,
+    minimumMinutes: 30,
+    importance: 3,
+    fixed: true,
+    autoFixed: true,
+    fixedStart: '21:20',
+    fixedEnd: '22:30'
+  });
+
+  assert.equal(input.fixed, false);
+  assert.equal(input.fixedStart, '21:20');
+  assert.equal(input.fixedEnd, '22:30');
+});
+
+test('deadline violation conflict summary explains the contradiction', () => {
+  const lines = conflictSummaryLines({
+    kind: 'deadline_violation',
+    availableMinutes: 340,
+    requiredMinimumMinutes: 70,
+    deadlineViolations: [{
+      taskId: 'task-eat',
+      taskName: '吃饭',
+      fixedStart: '21:20',
+      fixedEnd: '22:30',
+      deadline: '2026-07-08T19:30:00'
+    }]
+  });
+
+  assert.deepEqual(lines, [
+    '任务「吃饭」固定在 21:20 - 22:30，但截止时间是 19:30。请修改固定时间、截止时间，或删除该任务。'
+  ]);
 });
 
 test('calendarEventToPlanTask uses Calendar event time as fixed planned time for scheduled metadata', () => {

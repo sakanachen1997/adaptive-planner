@@ -122,6 +122,40 @@ function fixedElapsedMinutes(task, planDate, now) {
   return intervalMinutes(start, current < end ? current : end);
 }
 
+function fixedDeadlineViolation(task, planDate) {
+  if (!task.fixed || !task.fixedEnd) {
+    return null;
+  }
+
+  const deadline = validDateTime(task.deadline);
+
+  if (!deadline) {
+    return null;
+  }
+
+  const end = fixedDateTime(planDate, task.fixedEnd);
+
+  if (end <= deadline) {
+    return null;
+  }
+
+  return {
+    taskId: task.taskId,
+    taskName: task.taskName,
+    fixedStart: String(task.fixedStart ?? '').slice(0, 5),
+    fixedEnd: String(task.fixedEnd).slice(0, 5),
+    deadline
+  };
+}
+
+function unlockAutoFixedDeadlineViolation(task, planDate) {
+  if (!task.autoFixed || !fixedDeadlineViolation(task, planDate)) {
+    return task;
+  }
+
+  return { ...task, fixed: false, fixedStart: null, fixedEnd: null };
+}
+
 function taskWithEffectiveWork(task, planDate, now) {
   const elapsedMinutes = fixedElapsedMinutes(task, planDate, now);
   const effectiveMinimumMinutes = Math.max(0, task.minimumMinutes - elapsedMinutes);
@@ -423,6 +457,7 @@ function conflictResult(
     kind = 'minimum_overflow',
     desiredMinutes = null,
     belowMinimum = [],
+    deadlineViolations = [],
     actions = [...CONFLICT_ACTIONS]
   } = {}
 ) {
@@ -436,6 +471,7 @@ function conflictResult(
       requiredMinimumMinutes,
       desiredMinutes,
       belowMinimum,
+      deadlineViolations,
       actions
     }
   };
@@ -449,7 +485,9 @@ export function scheduleDay({
   tasks = []
 }) {
   const completed = completedSegments(tasks);
-  const active = activeTasks(tasks).map((task) => taskWithEffectiveWork(task, planDate, now));
+  const active = activeTasks(tasks)
+    .map((task) => unlockAutoFixedDeadlineViolation(task, planDate))
+    .map((task) => taskWithEffectiveWork(task, planDate, now));
   const available = futurePartOfBlocks(
     subtractIntervals(availableBlocks, protectedBlocks),
     now
@@ -461,6 +499,16 @@ export function scheduleDay({
   const desiredMinutes = active.reduce((sum, task) => (
     sum + task.effectiveDesiredMinutes
   ), 0);
+  const deadlineViolations = active
+    .map((task) => fixedDeadlineViolation(task, planDate))
+    .filter(Boolean);
+
+  if (deadlineViolations.length > 0) {
+    return conflictResult(planDate, completed, availableMinutes, requiredMinimumMinutes, {
+      kind: 'deadline_violation',
+      deadlineViolations
+    });
+  }
 
   if (requiredMinimumMinutes > availableMinutes) {
     return conflictResult(planDate, completed, availableMinutes, requiredMinimumMinutes);

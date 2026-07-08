@@ -772,6 +772,77 @@ test('deadline inside a block truncates placement instead of running past the de
   assert.equal(placedMinutes, 60);
 });
 
+test('auto-locked calendar task violating its deadline is unlocked and rescheduled before the deadline', () => {
+  const eat = {
+    ...task({
+      taskName: '吃饭',
+      taskType: '生活杂务',
+      desiredMinutes: 70,
+      minimumMinutes: 70,
+      importance: 3,
+      deadline: `${PLAN_DATE}T19:30:00`
+    }),
+    fixed: true,
+    autoFixed: true,
+    fixedStart: '21:20',
+    fixedEnd: '22:30'
+  };
+
+  const result = scheduleDay({
+    planDate: PLAN_DATE,
+    now: `${PLAN_DATE}T10:00:00`,
+    availableBlocks: [block('17:20', '23:00', CONTEXTS.HOME)],
+    protectedBlocks: [],
+    tasks: [
+      eat,
+      task({
+        taskName: '芭蕾',
+        taskType: '运动健身',
+        desiredMinutes: 110,
+        minimumMinutes: 110,
+        importance: 3,
+        fixed: true,
+        fixedStart: '19:30',
+        fixedEnd: '21:20'
+      })
+    ]
+  });
+
+  const eatSegments = scheduledSegments(result).filter((segment) => segment.taskName === '吃饭');
+
+  assert.equal(result.status, 'ok');
+  assert.ok(eatSegments.length > 0);
+  assert.ok(eatSegments.every((segment) => segment.end <= `${PLAN_DATE}T19:30:00`));
+});
+
+test('user-fixed task whose fixed time violates its deadline reports a deadline violation conflict', () => {
+  const result = scheduleDay({
+    planDate: PLAN_DATE,
+    now: `${PLAN_DATE}T10:00:00`,
+    availableBlocks: [block('17:20', '23:00', CONTEXTS.HOME)],
+    protectedBlocks: [],
+    tasks: [
+      task({
+        taskName: '吃饭',
+        taskType: '生活杂务',
+        desiredMinutes: 70,
+        minimumMinutes: 70,
+        importance: 3,
+        deadline: `${PLAN_DATE}T19:30:00`,
+        fixed: true,
+        fixedStart: '21:20',
+        fixedEnd: '22:30'
+      })
+    ]
+  });
+
+  assert.equal(result.status, 'conflict');
+  assert.equal(result.conflict.kind, 'deadline_violation');
+  assert.equal(result.conflict.deadlineViolations.length, 1);
+  assert.equal(result.conflict.deadlineViolations[0].taskName, '吃饭');
+  assert.equal(result.conflict.deadlineViolations[0].deadline, `${PLAN_DATE}T19:30:00`);
+});
+
 test('home-only tasks are not placed in work blocks', () => {
   const result = scheduleDay({
     planDate: PLAN_DATE,

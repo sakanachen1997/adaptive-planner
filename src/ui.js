@@ -155,6 +155,7 @@ export function calendarEventToPlanTask(event) {
       && plannedEnd
   ) {
     task.fixed = true;
+    task.autoFixed = true;
     task.fixedStart = timeFromDateTime(plannedStart);
     task.fixedEnd = timeFromDateTime(plannedEnd);
   }
@@ -344,7 +345,7 @@ export function formInputForTask(task) {
     importance: String(task.importance ?? ''),
     deadline: task.deadline ? normalizeDateTime(task.deadline).slice(0, 16) : '',
     executionContext: task.executionContext ?? CONTEXTS.ANY,
-    fixed: Boolean(task.fixed),
+    fixed: Boolean(task.fixed) && !task.autoFixed,
     fixedStart: toTimeInputValue(task.fixedStart),
     fixedEnd: toTimeInputValue(task.fixedEnd)
   };
@@ -370,6 +371,12 @@ export function shouldShowRecoveryActions(schedule) {
 }
 
 export function conflictSummaryLines(conflict) {
+  if (conflict.kind === 'deadline_violation' && conflict.deadlineViolations?.length) {
+    return conflict.deadlineViolations.map((item) => (
+      `任务「${item.taskName}」固定在 ${item.fixedStart} - ${item.fixedEnd}，但截止时间是 ${item.deadline.slice(11, 16)}。请修改固定时间、截止时间，或删除该任务。`
+    ));
+  }
+
   if (conflict.kind === 'placement_failure' && conflict.belowMinimum?.length) {
     return [
       ...conflict.belowMinimum.map((item) => (
@@ -386,6 +393,22 @@ export function conflictSummaryLines(conflict) {
 
 export function actualDurationForTask(schedule, taskId) {
   return schedule?.durationPlan?.allocations?.find((item) => item.taskId === taskId) ?? null;
+}
+
+export function deadlineLabel(deadline, planDate) {
+  if (!deadline) {
+    return '';
+  }
+
+  const normalized = normalizeDateTime(deadline);
+  const date = normalized.slice(0, 10);
+  const time = normalized.slice(11, 16);
+
+  if (!date || !time) {
+    return '';
+  }
+
+  return date === planDate ? `截止 ${time}` : `截止 ${date} ${time}`;
 }
 
 function sameDateTime(left, right) {
@@ -839,9 +862,11 @@ function renderConflictEditableTasks(root, tasks) {
   for (const task of editableTasks) {
     const row = document.createElement('div');
     row.className = 'schedule-actions';
+    const taskDeadline = deadlineLabel(task.deadline, state.planDate);
     appendText(
       row,
-      `${task.taskName}：想要 ${task.desiredMinutes} 分钟，最小 ${task.minimumMinutes} 分钟，优先级 ${Math.round(calculatePriority(task))}`,
+      `${task.taskName}：想要 ${task.desiredMinutes} 分钟，最小 ${task.minimumMinutes} 分钟，优先级 ${Math.round(calculatePriority(task))}`
+        + (taskDeadline ? `，${taskDeadline}` : ''),
       'span'
     );
     appendEditButton(row, task);
@@ -898,12 +923,16 @@ function renderSchedule() {
     item.className = `schedule-item ${segment.status === TASK_STATUSES.COMPLETED ? 'completed' : ''}`;
     const matchedTask = findTaskForSegment(segment, candidatesByTaskId);
     const actualDuration = actualDurationForTask(state.schedule, segment.taskId);
+    const deadlineText = matchedTask
+      ? deadlineLabel(matchedTask.deadline, state.planDate)
+      : '';
 
     appendText(item, segment.taskName, 'strong');
     appendText(
       item,
       `${segment.start.slice(11, 16)} - ${segment.end.slice(11, 16)}`
         + (segment.allocatedMinutes ? `，${segment.allocatedMinutes} 分钟` : '')
+        + (deadlineText ? `，${deadlineText}` : '')
         + (actualDuration ? `（想要 ${actualDuration.desiredMinutes} 分钟 / 最小 ${actualDuration.minimumMinutes} 分钟 / 实际 ${actualDuration.actualMinutes} 分钟）` : ''),
       'div'
     ).className = 'muted';
