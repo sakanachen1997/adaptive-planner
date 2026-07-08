@@ -211,6 +211,11 @@ button {
   opacity: 0.75;
 }
 
+.timeline-missed {
+  border-left-color: var(--danger);
+  background: var(--danger-bg);
+}
+
 .timeline-conflict {
   border-left-color: var(--danger);
   background: var(--danger-bg);

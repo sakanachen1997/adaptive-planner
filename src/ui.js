@@ -433,9 +433,112 @@ function timelineMinutes(value) {
   return hour * 60 + minute;
 }
 
-export function buildTimelineItems({ schedule = null, protectedBlocks = [], tasks = [] }) {
+function fixedTimeOnDate(planDate, time) {
+  const value = String(time ?? '');
+
+  if (/^\d{4}-\d{2}-\d{2}T/.test(value)) {
+    return normalizeDateTime(value);
+  }
+
+  if (/^\d{2}:\d{2}$/.test(value)) {
+    return `${planDate}T${value}:00`;
+  }
+
+  if (/^\d{2}:\d{2}:\d{2}$/.test(value)) {
+    return `${planDate}T${value}`;
+  }
+
+  return null;
+}
+
+function plannedIntervalForTask(task, planDate) {
+  const start = task.plannedStart
+    ? normalizeDateTime(task.plannedStart)
+    : task.fixed && task.fixedStart && planDate
+      ? fixedTimeOnDate(planDate, task.fixedStart)
+      : null;
+  const end = task.plannedEnd
+    ? normalizeDateTime(task.plannedEnd)
+    : task.fixed && task.fixedEnd && planDate
+      ? fixedTimeOnDate(planDate, task.fixedEnd)
+      : null;
+
+  if (!start || !end || end <= start) {
+    return null;
+  }
+
+  return { start, end };
+}
+
+function timelineSegmentKey(segment) {
+  return [
+    segment.segmentId ?? '',
+    segment.calendarEventId ?? '',
+    segment.taskId,
+    segment.start,
+    segment.end
+  ].join('|');
+}
+
+function missedTimelineItems({ tasks, existingSegments, planDate, now, candidatesByTaskId }) {
+  if (!now) {
+    return [];
+  }
+
+  const current = normalizeDateTime(now);
+  const existingKeys = new Set(existingSegments.map(timelineSegmentKey));
+
+  return tasks
+    .filter((task) => task.status !== TASK_STATUSES.COMPLETED)
+    .filter((task) => task.status !== TASK_STATUSES.SKIPPED)
+    .map((task) => {
+      const interval = plannedIntervalForTask(task, task.planDate ?? planDate);
+
+      if (!interval || interval.end > current) {
+        return null;
+      }
+
+      const segment = {
+        taskId: task.taskId,
+        taskName: task.taskName,
+        status: 'missed',
+        start: interval.start,
+        end: interval.end,
+        allocatedMinutes: task.desiredMinutes,
+        segmentId: task.segmentId ?? null,
+        calendarEventId: task.calendarEventId ?? null
+      };
+
+      if (existingKeys.has(timelineSegmentKey(segment))) {
+        return null;
+      }
+
+      return {
+        kind: 'task',
+        id: `missed:${task.calendarEventId ?? task.segmentId ?? task.taskId}:${interval.start}:${interval.end}`,
+        task: findTaskForSegment(segment, candidatesByTaskId) ?? task,
+        segment,
+        title: task.taskName,
+        start: interval.start,
+        end: interval.end,
+        startMinute: timelineMinutes(interval.start),
+        endMinute: timelineMinutes(interval.end),
+        status: 'missed',
+        editable: true
+      };
+    })
+    .filter(Boolean);
+}
+
+export function buildTimelineItems({
+  schedule = null,
+  protectedBlocks = [],
+  tasks = [],
+  now = null
+}) {
   const candidatesByTaskId = taskCandidatesByTaskId(tasks);
-  const taskItems = (schedule?.segments ?? []).map((segment) => {
+  const scheduleSegments = schedule?.segments ?? [];
+  const taskItems = scheduleSegments.map((segment) => {
     const task = findTaskForSegment(segment, candidatesByTaskId);
 
     return {
@@ -452,6 +555,13 @@ export function buildTimelineItems({ schedule = null, protectedBlocks = [], task
       editable: Boolean(task)
     };
   });
+  const missedItems = missedTimelineItems({
+    tasks,
+    existingSegments: scheduleSegments,
+    planDate: schedule?.planDate ?? null,
+    now,
+    candidatesByTaskId
+  });
   const protectedItems = protectedBlocks.map((block) => ({
     kind: 'protected',
     id: `protected:${block.calendarEventId ?? block.start}`,
@@ -465,7 +575,7 @@ export function buildTimelineItems({ schedule = null, protectedBlocks = [], task
     editable: false
   }));
 
-  return [...taskItems, ...protectedItems].sort((left, right) => (
+  return [...taskItems, ...missedItems, ...protectedItems].sort((left, right) => (
     left.start.localeCompare(right.start) || left.end.localeCompare(right.end)
   ));
 }
@@ -1171,6 +1281,10 @@ function renderTimelineTaskDetail(parent, item) {
     ).className = 'muted';
   }
 
+  if (item.status === 'missed') {
+    appendText(parent, '预定时间已过去，但任务尚未标记完成。它没有被自动完成；你可以手动完成、编辑，或跳过并重排。', 'p').className = 'schedule-item error';
+  }
+
   if (!task) {
     appendText(parent, '找不到对应任务，无法编辑。', 'p').className = 'muted';
     return;
@@ -1245,7 +1359,8 @@ function renderSchedule() {
   const items = buildTimelineItems({
     schedule: state.schedule,
     protectedBlocks,
-    tasks: currentTasks
+    tasks: currentTasks,
+    now: localNowString()
   });
   const selectedItem = items.find((item) => item.id === state.selectedTimelineItemId) ?? null;
   const bounds = timelineBounds(items);
