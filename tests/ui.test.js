@@ -9,6 +9,7 @@ import {
   actualDurationForTask,
   conflictSummaryLines,
   editableTasksForSchedule,
+  removeTaskForReschedule,
   formInputForTask,
   shouldShowRecoveryActions,
   mergePlanTasks,
@@ -45,6 +46,57 @@ test('conflict schedules expose active tasks for editing', () => {
   );
 
   assert.deepEqual(editable.map((task) => task.taskId), ['pending', 'scheduled']);
+});
+
+test('conflict panel lists lowest priority tasks first as skip candidates', () => {
+  const editable = editableTasksForSchedule(
+    { status: 'conflict', segments: [] },
+    [
+      {
+        taskId: 'high',
+        taskName: 'High',
+        status: TASK_STATUSES.PENDING,
+        importance: 5,
+        desiredMinutes: 60
+      },
+      {
+        taskId: 'low',
+        taskName: 'Low',
+        status: TASK_STATUSES.PENDING,
+        importance: 1,
+        desiredMinutes: 60
+      }
+    ]
+  );
+
+  assert.deepEqual(editable.map((task) => task.taskId), ['low', 'high']);
+});
+
+test('removeTaskForReschedule drops a local-only task from the local task list', () => {
+  const localTasks = [
+    { taskId: 'task-1', taskName: 'Keep' },
+    { taskId: 'task-2', taskName: 'Remove' }
+  ];
+
+  const updated = removeTaskForReschedule(localTasks, { taskId: 'task-2', taskName: 'Remove' });
+
+  assert.deepEqual(updated.map((task) => task.taskId), ['task-1']);
+});
+
+test('removeTaskForReschedule marks a calendar-backed task skipped so sync deletes its event', () => {
+  const calendarTask = {
+    taskId: 'task-1',
+    taskName: 'Synced',
+    calendarEventId: 'event-1',
+    status: TASK_STATUSES.SCHEDULED
+  };
+
+  const updated = removeTaskForReschedule([], calendarTask);
+
+  assert.equal(updated.length, 1);
+  assert.equal(updated[0].status, TASK_STATUSES.SKIPPED);
+  assert.equal(updated[0].localOverride, true);
+  assert.equal(updated[0].calendarEventId, 'event-1');
 });
 
 test('formInputForTask preserves task fields as form-ready values', () => {

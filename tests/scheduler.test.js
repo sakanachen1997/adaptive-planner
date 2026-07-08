@@ -696,6 +696,82 @@ test('placement failure conflict identifies the failing task instead of reportin
   assert.equal(result.conflict.belowMinimum[0].scheduledMinutes, 0);
 });
 
+test('task with a same-day deadline finishes before the deadline even when a later block scores higher', () => {
+  const result = scheduleDay({
+    planDate: PLAN_DATE,
+    now: NOW,
+    availableBlocks: [
+      block('09:00', '12:00', CONTEXTS.ANY),
+      block('21:00', '23:00', CONTEXTS.ANY)
+    ],
+    protectedBlocks: [],
+    tasks: [
+      task({
+        taskName: '买菜',
+        taskType: '生活杂务',
+        desiredMinutes: 60,
+        minimumMinutes: 30,
+        importance: 3,
+        deadline: `${PLAN_DATE}T12:00:00`
+      })
+    ]
+  });
+
+  const segments = scheduledSegments(result);
+
+  assert.equal(result.status, 'ok');
+  assert.ok(segments.length > 0);
+  assert.ok(segments.every((segment) => segment.end <= `${PLAN_DATE}T12:00:00`));
+});
+
+test('deadline that cannot be met reports a placement failure naming the task', () => {
+  const result = scheduleDay({
+    planDate: PLAN_DATE,
+    now: NOW,
+    availableBlocks: [block('14:00', '18:00', CONTEXTS.ANY)],
+    protectedBlocks: [],
+    tasks: [
+      task({
+        taskName: '买菜',
+        taskType: '生活杂务',
+        desiredMinutes: 60,
+        minimumMinutes: 30,
+        importance: 3,
+        deadline: `${PLAN_DATE}T12:00:00`
+      })
+    ]
+  });
+
+  assert.equal(result.status, 'conflict');
+  assert.equal(result.conflict.kind, 'placement_failure');
+  assert.equal(result.conflict.belowMinimum[0].taskName, '买菜');
+});
+
+test('deadline inside a block truncates placement instead of running past the deadline', () => {
+  const result = scheduleDay({
+    planDate: PLAN_DATE,
+    now: NOW,
+    availableBlocks: [block('09:00', '18:00', CONTEXTS.ANY)],
+    protectedBlocks: [],
+    tasks: [
+      task({
+        taskName: '买菜',
+        taskType: '生活杂务',
+        desiredMinutes: 120,
+        minimumMinutes: 30,
+        importance: 3,
+        deadline: `${PLAN_DATE}T10:00:00`
+      })
+    ]
+  });
+
+  const segments = scheduledSegments(result);
+  const placedMinutes = segments.reduce((sum, segment) => sum + segment.allocatedMinutes, 0);
+
+  assert.ok(segments.every((segment) => segment.end <= `${PLAN_DATE}T10:00:00`));
+  assert.equal(placedMinutes, 60);
+});
+
 test('home-only tasks are not placed in work blocks', () => {
   const result = scheduleDay({
     planDate: PLAN_DATE,

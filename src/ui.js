@@ -11,6 +11,7 @@ import {
   isPlanManagedEvent
 } from './metadata.js';
 import { scheduleDay } from './scheduler.js';
+import { calculatePriority } from './priority.js';
 import { combineDateAndTime, normalizeDateTime } from './time.js';
 import { loadSettings, saveSettings } from './storage.js';
 import {
@@ -312,12 +313,26 @@ function activeEditableTask(task) {
     && task.status !== TASK_STATUSES.SKIPPED;
 }
 
-export function editableTasksForSchedule(schedule, tasks) {
+export function editableTasksForSchedule(schedule, tasks, now = new Date()) {
   if (schedule?.status !== 'conflict') {
     return [];
   }
 
-  return tasks.filter(activeEditableTask);
+  return tasks
+    .filter(activeEditableTask)
+    .sort((left, right) => calculatePriority(left, now) - calculatePriority(right, now));
+}
+
+export function removeTaskForReschedule(localTasks, task) {
+  if (task.calendarEventId) {
+    return upsertLocalTask(localTasks, {
+      ...task,
+      status: TASK_STATUSES.SKIPPED,
+      localOverride: true
+    });
+  }
+
+  return localTasks.filter((candidate) => !sameEditableTask(candidate, task));
 }
 
 export function formInputForTask(task) {
@@ -819,17 +834,24 @@ function renderConflictEditableTasks(root, tasks) {
 
   const wrapper = document.createElement('div');
   wrapper.className = 'schedule-item';
-  appendText(wrapper, '当前未完成任务（可编辑后重排）', 'strong');
+  appendText(wrapper, '当前未完成任务（优先级低的排在前，可编辑或删除后重排）', 'strong');
 
   for (const task of editableTasks) {
     const row = document.createElement('div');
     row.className = 'schedule-actions';
     appendText(
       row,
-      `${task.taskName}：想要 ${task.desiredMinutes} 分钟，最小 ${task.minimumMinutes} 分钟`,
+      `${task.taskName}：想要 ${task.desiredMinutes} 分钟，最小 ${task.minimumMinutes} 分钟，优先级 ${Math.round(calculatePriority(task))}`,
       'span'
     );
     appendEditButton(row, task);
+
+    const remove = document.createElement('button');
+    remove.type = 'button';
+    remove.textContent = '删除并重排';
+    remove.dataset.removeTaskKey = taskEditKey(task);
+    row.append(remove);
+
     wrapper.append(row);
   }
 
@@ -1260,11 +1282,38 @@ function addAvailableBlock() {
   recalculate();
 }
 
+function removeTask(key) {
+  const task = findEditableTaskByKey(key);
+
+  if (!task) {
+    showMessage('找不到要删除的任务。', true);
+    return;
+  }
+
+  state.tasks = removeTaskForReschedule(state.tasks, task);
+
+  if (state.editingTaskKey === key) {
+    resetTaskForm();
+  }
+
+  recalculate();
+  showMessage(task.calendarEventId
+    ? '任务已跳过并重排。下次同步时会删除对应的日历事件。'
+    : '任务已删除并重排。');
+}
+
 function handleScheduleClick(event) {
   const editKey = event.target.dataset.editTaskKey;
 
   if (editKey) {
     editTask(editKey);
+    return;
+  }
+
+  const removeKey = event.target.dataset.removeTaskKey;
+
+  if (removeKey) {
+    removeTask(removeKey);
     return;
   }
 

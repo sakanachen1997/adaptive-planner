@@ -252,6 +252,17 @@ function segmentForTask(task, start, minutes) {
   };
 }
 
+function usableMinutes(task, block) {
+  const capacity = intervalMinutes(block.start, block.end);
+  const deadline = validDateTime(task.deadline);
+
+  if (!deadline) {
+    return capacity;
+  }
+
+  return Math.min(capacity, intervalMinutes(block.start, deadline));
+}
+
 function rankedCompatibleBlocks(task, blocks) {
   return blocks
     .map((block, index) => ({ block, index, score: scorePlacement(task, block) }))
@@ -275,10 +286,7 @@ function placeTask(task, minutes, blocks) {
 
     const compatible = rankedCompatibleBlocks(task, remainingBlocks);
     let placed = false;
-    const capacityOf = (item) => intervalMinutes(
-      remainingBlocks[item.index].start,
-      remainingBlocks[item.index].end
-    );
+    const capacityOf = (item) => usableMinutes(task, remainingBlocks[item.index]);
 
     const candidates = task.splittable
       ? [
@@ -290,26 +298,15 @@ function placeTask(task, minutes, blocks) {
           ...compatible
         ]
       : [
-          compatible.find((item) => intervalMinutes(
-            remainingBlocks[item.index].start,
-            remainingBlocks[item.index].end
-          ) >= remaining),
+          compatible.find((item) => capacityOf(item) >= remaining),
           ...compatible
-            .filter((item) => {
-              const block = remainingBlocks[item.index];
-              return intervalMinutes(block.start, block.end) >= task.effectiveMinimumMinutes;
-            })
-            .sort((left, right) => {
-              const leftBlock = remainingBlocks[left.index];
-              const rightBlock = remainingBlocks[right.index];
-              return intervalMinutes(rightBlock.start, rightBlock.end)
-                - intervalMinutes(leftBlock.start, leftBlock.end);
-            })
+            .filter((item) => capacityOf(item) >= task.effectiveMinimumMinutes)
+            .sort((left, right) => capacityOf(right) - capacityOf(left))
         ].filter(Boolean);
 
     for (const item of candidates) {
       const block = remainingBlocks[item.index];
-      const capacity = intervalMinutes(block.start, block.end);
+      const capacity = usableMinutes(task, block);
       const minimumForSegment = task.splittable
         ? task.minSegmentMinutes
         : Math.min(remaining, task.effectiveMinimumMinutes);
