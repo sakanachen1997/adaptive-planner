@@ -1,6 +1,7 @@
 import {
   APP_ID,
   CONTEXTS,
+  ORDER_PREFERENCES,
   TASK_STATUSES,
   TASK_TYPE_DEFAULTS,
   createTask
@@ -35,6 +36,28 @@ const BLOCK_CONTEXT_OPTIONS = Object.freeze([
   { value: CONTEXTS.WORK, label: '工作时间' },
   { value: CONTEXTS.HOME, label: '下班后' },
   { value: CONTEXTS.CUSTOM, label: '自定义' }
+]);
+
+const ENERGY_DEMAND_OPTIONS = Object.freeze([
+  { value: 'high', label: '高' },
+  { value: 'mediumHigh', label: '中高' },
+  { value: 'medium', label: '中' },
+  { value: 'mediumLow', label: '中低' },
+  { value: 'low', label: '低' }
+]);
+
+const PHYSICAL_DEMAND_OPTIONS = Object.freeze([
+  { value: 'high', label: '高' },
+  { value: 'medium', label: '中' },
+  { value: 'low', label: '低' },
+  { value: 'variable', label: '可变' }
+]);
+
+const ORDER_PREFERENCE_OPTIONS = Object.freeze([
+  { value: ORDER_PREFERENCES.MORNING, label: '上午' },
+  { value: ORDER_PREFERENCES.AFTERNOON, label: '下午' },
+  { value: ORDER_PREFERENCES.EVENING, label: '晚上' },
+  { value: ORDER_PREFERENCES.ANY, label: '不限' }
 ]);
 
 const DEFAULT_MESSAGE = '先生成可用时间块并添加任务，然后点击调度。';
@@ -337,14 +360,23 @@ export function removeTaskForReschedule(localTasks, task) {
 }
 
 export function formInputForTask(task) {
+  const taskType = task.taskType ?? '自定义';
+  const defaults = TASK_TYPE_DEFAULTS[taskType] ?? TASK_TYPE_DEFAULTS['自定义'];
+
   return {
     taskName: task.taskName ?? '',
-    taskType: task.taskType ?? '自定义',
+    taskType,
     desiredMinutes: String(task.desiredMinutes ?? ''),
     minimumMinutes: String(task.minimumMinutes ?? ''),
     importance: String(task.importance ?? ''),
     deadline: task.deadline ? normalizeDateTime(task.deadline).slice(0, 16) : '',
-    executionContext: task.executionContext ?? CONTEXTS.ANY,
+    executionContext: task.executionContext ?? defaults.executionContext,
+    energyDemand: task.energyDemand ?? defaults.energyDemand,
+    physicalDemand: task.physicalDemand ?? defaults.physicalDemand,
+    orderPreference: task.orderPreference ?? defaults.orderPreference,
+    splittable: task.splittable ?? defaults.splittable,
+    minSegmentMinutes: String(task.minSegmentMinutes ?? defaults.minSegmentMinutes),
+    externalCommitment: String(task.externalCommitment ?? defaults.externalCommitment),
     fixed: Boolean(task.fixed) && !task.autoFixed,
     fixedStart: toTimeInputValue(task.fixedStart),
     fixedEnd: toTimeInputValue(task.fixedEnd)
@@ -779,6 +811,41 @@ function renderExecutionContextOptions() {
   );
 }
 
+function renderSelectOptions(name, options) {
+  const select = firstElement(`select[name="${name}"]`);
+
+  if (!select) {
+    return;
+  }
+
+  select.replaceChildren(
+    ...options.map(({ value, label }) => option(value, label))
+  );
+}
+
+function renderTaskPresetFieldOptions() {
+  renderSelectOptions('energyDemand', ENERGY_DEMAND_OPTIONS);
+  renderSelectOptions('physicalDemand', PHYSICAL_DEMAND_OPTIONS);
+  renderSelectOptions('orderPreference', ORDER_PREFERENCE_OPTIONS);
+}
+
+function applyTaskTypePreset(taskType) {
+  const form = element('taskForm');
+  const defaults = TASK_TYPE_DEFAULTS[taskType] ?? TASK_TYPE_DEFAULTS['自定义'];
+
+  if (!form) {
+    return;
+  }
+
+  form.elements.executionContext.value = defaults.executionContext;
+  form.elements.energyDemand.value = defaults.energyDemand;
+  form.elements.physicalDemand.value = defaults.physicalDemand;
+  form.elements.orderPreference.value = defaults.orderPreference;
+  form.elements.splittable.checked = defaults.splittable;
+  form.elements.minSegmentMinutes.value = String(defaults.minSegmentMinutes);
+  form.elements.externalCommitment.value = String(defaults.externalCommitment);
+}
+
 function renderContextSelect(select, selectedValue) {
   select.replaceChildren(
     ...BLOCK_CONTEXT_OPTIONS.map(({ value, label }) => option(value, label))
@@ -1141,6 +1208,12 @@ function taskInputFromForm(form) {
     importance: data.get('importance'),
     deadline: data.get('deadline'),
     executionContext: data.get('executionContext'),
+    energyDemand: data.get('energyDemand'),
+    physicalDemand: data.get('physicalDemand'),
+    orderPreference: data.get('orderPreference'),
+    splittable: data.get('splittable') === 'on',
+    minSegmentMinutes: data.get('minSegmentMinutes'),
+    externalCommitment: data.get('externalCommitment'),
     fixed: data.get('fixed') === 'on',
     fixedStart: data.get('fixedStart'),
     fixedEnd: data.get('fixedEnd')
@@ -1175,6 +1248,12 @@ function fillTaskForm(task) {
   form.elements.importance.value = input.importance;
   form.elements.deadline.value = input.deadline;
   form.elements.executionContext.value = input.executionContext;
+  form.elements.energyDemand.value = input.energyDemand;
+  form.elements.physicalDemand.value = input.physicalDemand;
+  form.elements.orderPreference.value = input.orderPreference;
+  form.elements.splittable.checked = input.splittable;
+  form.elements.minSegmentMinutes.value = input.minSegmentMinutes;
+  form.elements.externalCommitment.value = input.externalCommitment;
   form.elements.fixed.checked = input.fixed;
   form.elements.fixedStart.value = input.fixedStart;
   form.elements.fixedEnd.value = input.fixedEnd;
@@ -1190,6 +1269,8 @@ function resetTaskForm() {
   state.editingTaskKey = null;
   renderTaskTypeOptions();
   renderExecutionContextOptions();
+  renderTaskPresetFieldOptions();
+  applyTaskTypePreset(form?.elements.taskType.value);
   setTaskFormMode(null);
 }
 
@@ -1446,6 +1527,9 @@ function wireEvents() {
   element('availableBlocks')?.addEventListener('change', handleAvailableBlockInput);
   element('availableBlocks')?.addEventListener('click', handleAvailableBlockClick);
   element('taskForm')?.addEventListener('submit', submitTaskForm);
+  firstElement('select[name="taskType"]')?.addEventListener('change', (event) => {
+    applyTaskTypePreset(event.target.value);
+  });
   element('cancelEditTaskButton')?.addEventListener('click', resetTaskForm);
   element('scheduleList')?.addEventListener('click', handleScheduleClick);
   element('planDateInput')?.addEventListener('change', (event) => {
@@ -1476,6 +1560,8 @@ export function initApp() {
   populateInitialValues();
   renderTaskTypeOptions();
   renderExecutionContextOptions();
+  renderTaskPresetFieldOptions();
+  applyTaskTypePreset(firstElement('select[name="taskType"]')?.value);
   setTaskFormMode(null);
   renderAvailableBlocks();
   wireEvents();

@@ -13,6 +13,12 @@ test('task form fields have visible labels', () => {
     '重要性',
     '截止时间（任务须在此之前完成）',
     '执行场景',
+    '精力需求',
+    '体力需求',
+    '顺序偏好',
+    '是否可拆分',
+    '最小分段时长',
+    '外部承诺',
     '固定开始时间',
     '固定结束时间'
   ];
@@ -23,6 +29,19 @@ test('task form fields have visible labels', () => {
       new RegExp(`<span[^>]*>${label}</span>`),
       `missing visible label: ${label}`
     );
+  }
+});
+
+test('task form exposes every task type preset field as editable controls', () => {
+  for (const fieldName of [
+    'energyDemand',
+    'physicalDemand',
+    'orderPreference',
+    'splittable',
+    'minSegmentMinutes',
+    'externalCommitment'
+  ]) {
+    assert.match(html, new RegExp(`name="${fieldName}"`), `missing editable field: ${fieldName}`);
   }
 });
 

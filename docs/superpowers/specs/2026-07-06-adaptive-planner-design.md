@@ -135,7 +135,12 @@ Each task has:
 - Optional deadline.
 - Execution context: `任意时间`, `仅工作时间`, `仅下班后`, or custom time window.
 - Fixed time setting and optional fixed start/end.
-- Optional overrides for energy demand, splittability, and minimum segment length.
+- Energy demand.
+- Physical demand.
+- Order preference.
+- Splittability.
+- Minimum segment length.
+- External commitment.
 
 Task types provide defaults:
 
@@ -150,7 +155,7 @@ Task types provide defaults:
 | 生活杂务 | Low | Variable | Medium | 15 min | Low-energy blocks | Fill practical gaps |
 | 自定义 | Medium | Low | Medium | 20 min | Any compatible block | User overrides decide |
 
-The defaults are editable globally and overridable per task.
+Task type defaults are visible presets, not hidden bindings. Selecting a task type fills the task form's execution context, energy demand, physical demand, order preference, splittability, minimum segment length, and external commitment fields. The user can override every one of these fields before saving; the saved task metadata is the source of truth.
 
 ## Priority Model
 
@@ -360,7 +365,7 @@ Automated tests should cover pure logic:
 - The user can configure OAuth Client ID and connect to Google Calendar.
 - The app reads primary calendar events for a selected day.
 - Ordinary events block time and are never modified.
-- The user can create tasks with the agreed fields.
+- The user can create tasks with the agreed fields, including every task type preset field as a visible, editable form field.
 - The app produces a same-day schedule respecting fixed events, contexts, minimum durations, and task type defaults.
 - The app detects impossible schedules and offers only the three agreed recovery actions.
 - The app writes Plan tasks to Google Calendar with `PLAN_META` JSON.

@@ -1639,6 +1639,7 @@ Red-flag scan:
 
 Type consistency:
 
-- `taskId`, `taskName`, `taskType`, `desiredMinutes`, `minimumMinutes`, `importance`, `deadline`, `executionContext`, `fixed`, `fixedStart`, `fixedEnd`, `status`, `actualStart`, `actualEnd`, and `weekPlanId` are defined in `src/models.js` and reused consistently.
+- `taskId`, `taskName`, `taskType`, `desiredMinutes`, `minimumMinutes`, `importance`, `deadline`, `executionContext`, `energyDemand`, `physicalDemand`, `orderPreference`, `splittable`, `minSegmentMinutes`, `externalCommitment`, `fixed`, `fixedStart`, `fixedEnd`, `status`, `actualStart`, `actualEnd`, and `weekPlanId` are defined in `src/models.js` and reused consistently.
+- `taskType` is only a visible preset selector. The preset values for execution context, energy demand, physical demand, order preference, splittability, minimum segment length, and external commitment must appear in the task form and can be overwritten before saving. Saved task metadata, not the task type alone, is the source of truth.
 - `PLAN_META`, `schemaVersion`, and `app` metadata fields are parsed in `src/metadata.js` and written in `src/ui.js`.
 - `scheduleDay` receives `planDate`, `now`, `availableBlocks`, `protectedBlocks`, and `tasks` in tests and UI.
