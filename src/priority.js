@@ -87,13 +87,30 @@ export function energyLevelForHour(hour) {
   return 'low';
 }
 
+export function periodForHour(hour) {
+  const normalizedHour = Number(hour);
+
+  if (normalizedHour >= 5 && normalizedHour < 12) {
+    return 'morning';
+  }
+  if (normalizedHour >= 12 && normalizedHour < 17) {
+    return 'afternoon';
+  }
+  return 'evening';
+}
+
 export function scorePlacement(task, interval) {
-  const slotEnergy = energyLevelForHour(intervalStartHour(interval));
+  const startHour = intervalStartHour(interval);
+  const slotEnergy = energyLevelForHour(startHour);
   const energyFit = ENERGY_SCORE[slotEnergy]?.[task.energyDemand] ?? 3;
   const contextFit = task.executionContext === CONTEXTS.ANY || task.executionContext === interval.context
     ? 5
     : -20;
   const gapFit = task.splittable ? 2 : 0;
+  const preference = task.orderPreference ?? 'any';
+  const preferenceFit = preference !== 'any' && periodForHour(startHour) === preference
+    ? 6
+    : 0;
 
-  return energyFit * 4 + contextFit + gapFit;
+  return energyFit * 4 + contextFit + gapFit + preferenceFit;
 }

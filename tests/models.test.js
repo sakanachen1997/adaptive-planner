@@ -168,3 +168,36 @@ test('task type defaults and nested defaults are frozen', () => {
     assert.equal(Object.isFrozen(defaults), true);
   }
 });
+
+test('createTask derives order preference from task type circadian defaults', () => {
+  const gaming = createTask({
+    taskName: '打游戏',
+    taskType: '打游戏',
+    desiredMinutes: 60,
+    minimumMinutes: 30,
+    importance: 2
+  });
+  const coding = createTask({
+    taskName: '编码',
+    taskType: '编码工作',
+    desiredMinutes: 60,
+    minimumMinutes: 45,
+    importance: 5
+  });
+
+  assert.equal(gaming.orderPreference, 'evening');
+  assert.equal(coding.orderPreference, 'morning');
+});
+
+test('createTask accepts an explicit order preference override', () => {
+  const task = createTask({
+    taskName: '晨间游戏',
+    taskType: '打游戏',
+    desiredMinutes: 60,
+    minimumMinutes: 30,
+    importance: 2,
+    orderPreference: 'morning'
+  });
+
+  assert.equal(task.orderPreference, 'morning');
+});

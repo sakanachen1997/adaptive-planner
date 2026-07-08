@@ -15,6 +15,13 @@ export const TASK_STATUSES = Object.freeze({
   SKIPPED: 'skipped'
 });
 
+export const ORDER_PREFERENCES = Object.freeze({
+  MORNING: 'morning',
+  AFTERNOON: 'afternoon',
+  EVENING: 'evening',
+  ANY: 'any'
+});
+
 function freezeDefaults(defaults) {
   for (const value of Object.values(defaults)) {
     Object.freeze(value);
@@ -29,6 +36,7 @@ export const TASK_TYPE_DEFAULTS = freezeDefaults({
     splittable: false,
     minSegmentMinutes: 45,
     executionContext: CONTEXTS.WORK,
+    orderPreference: ORDER_PREFERENCES.MORNING,
     externalCommitment: 4
   },
   复杂教程和学习: {
@@ -37,6 +45,7 @@ export const TASK_TYPE_DEFAULTS = freezeDefaults({
     splittable: true,
     minSegmentMinutes: 25,
     executionContext: CONTEXTS.ANY,
+    orderPreference: ORDER_PREFERENCES.MORNING,
     externalCommitment: 2
   },
   背单词: {
@@ -45,6 +54,7 @@ export const TASK_TYPE_DEFAULTS = freezeDefaults({
     splittable: true,
     minSegmentMinutes: 10,
     executionContext: CONTEXTS.ANY,
+    orderPreference: ORDER_PREFERENCES.ANY,
     externalCommitment: 1
   },
   打游戏: {
@@ -53,6 +63,7 @@ export const TASK_TYPE_DEFAULTS = freezeDefaults({
     splittable: true,
     minSegmentMinutes: 30,
     executionContext: CONTEXTS.HOME,
+    orderPreference: ORDER_PREFERENCES.EVENING,
     externalCommitment: 0
   },
   运动健身: {
@@ -61,6 +72,7 @@ export const TASK_TYPE_DEFAULTS = freezeDefaults({
     splittable: false,
     minSegmentMinutes: 30,
     executionContext: CONTEXTS.HOME,
+    orderPreference: ORDER_PREFERENCES.EVENING,
     externalCommitment: 2
   },
   绘画委托副业: {
@@ -69,6 +81,7 @@ export const TASK_TYPE_DEFAULTS = freezeDefaults({
     splittable: true,
     minSegmentMinutes: 30,
     executionContext: CONTEXTS.HOME,
+    orderPreference: ORDER_PREFERENCES.EVENING,
     externalCommitment: 4
   },
   生活杂务: {
@@ -77,6 +90,7 @@ export const TASK_TYPE_DEFAULTS = freezeDefaults({
     splittable: true,
     minSegmentMinutes: 15,
     executionContext: CONTEXTS.ANY,
+    orderPreference: ORDER_PREFERENCES.ANY,
     externalCommitment: 1
   },
   自定义: {
@@ -85,6 +99,7 @@ export const TASK_TYPE_DEFAULTS = freezeDefaults({
     splittable: true,
     minSegmentMinutes: 20,
     executionContext: CONTEXTS.ANY,
+    orderPreference: ORDER_PREFERENCES.ANY,
     externalCommitment: 1
   }
 });
@@ -172,6 +187,7 @@ export function createTask(input) {
     fixedEnd: input.fixedEnd || null,
     energyDemand: input.energyDemand ?? defaults.energyDemand,
     physicalDemand: input.physicalDemand ?? defaults.physicalDemand,
+    orderPreference: input.orderPreference ?? defaults.orderPreference,
     splittable: input.splittable ?? defaults.splittable,
     minSegmentMinutes: positiveNumber(valueOrDefault(input, 'minSegmentMinutes', defaults.minSegmentMinutes), 'minSegmentMinutes'),
     externalCommitment: nonNegativeNumber(valueOrDefault(input, 'externalCommitment', defaults.externalCommitment), 'externalCommitment'),

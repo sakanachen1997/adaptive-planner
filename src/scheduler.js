@@ -421,6 +421,126 @@ function placeFixedTask(task, allocatedMinutes, blocks, planDate, now) {
   };
 }
 
+function isUserFixed(task) {
+  return Boolean(task.fixed && task.fixedStart && task.fixedEnd);
+}
+
+function competingDonors(failedTask, tasks, allocations, available) {
+  return tasks
+    .filter((task) => task.taskId !== failedTask.taskId)
+    .filter((task) => !isUserFixed(task))
+    .map((task) => ({
+      task,
+      slack: (allocations.get(task.taskId) ?? task.effectiveMinimumMinutes)
+        - task.effectiveMinimumMinutes
+    }))
+    .filter((item) => item.slack > 0)
+    .filter((item) => available.some((block) => (
+      contextCompatible(failedTask, block)
+        && usableMinutes(failedTask, block) > 0
+        && contextCompatible(item.task, block)
+        && usableMinutes(item.task, block) > 0
+    )));
+}
+
+function distributeCompression(deficit, donors, now) {
+  const pool = donors
+    .map((item) => ({
+      ...item,
+      weight: 1 / Math.max(1, calculatePriority(item.task, now)),
+      taken: 0
+    }))
+    .sort((left, right) => (
+      right.weight - left.weight
+        || left.task.taskName.localeCompare(right.task.taskName)
+    ));
+  let remaining = deficit;
+
+  while (remaining > 0) {
+    const active = pool.filter((item) => item.slack > 0);
+
+    if (active.length === 0) {
+      return null;
+    }
+
+    const base = remaining;
+    const totalWeight = active.reduce((sum, item) => sum + item.weight, 0);
+
+    for (const item of active) {
+      if (remaining <= 0) {
+        break;
+      }
+
+      const share = Math.min(
+        item.slack,
+        remaining,
+        Math.max(1, Math.floor(base * (item.weight / totalWeight)))
+      );
+      item.taken += share;
+      item.slack -= share;
+      remaining -= share;
+    }
+  }
+
+  return pool.filter((item) => item.taken > 0);
+}
+
+function withAllocationCaps(allocations, caps) {
+  return new Map([...allocations].map(([taskId, minutes]) => [
+    taskId,
+    Math.min(minutes, caps.get(taskId) ?? Infinity)
+  ]));
+}
+
+function attemptPlacement({ fixedTasks, flexibleTasks, allocations, available, planDate, now }) {
+  let blocks = available.map((block) => ({ ...block }));
+  const scheduled = [];
+  const unscheduled = [];
+
+  const record = (task, result) => {
+    const scheduledMinutes = result.segments.reduce((sum, segment) => (
+      sum + segment.allocatedMinutes
+    ), 0);
+
+    if (scheduledMinutes < task.effectiveMinimumMinutes) {
+      return { task, scheduledMinutes };
+    }
+
+    scheduled.push(...result.segments);
+    blocks = result.blocks;
+
+    if (result.remaining > 0) {
+      unscheduled.push({
+        taskId: task.taskId,
+        taskName: task.taskName,
+        remainingMinutes: result.remaining
+      });
+    }
+
+    return null;
+  };
+
+  for (const task of fixedTasks) {
+    const allocatedMinutes = allocations.get(task.taskId) ?? task.effectiveMinimumMinutes;
+    const failure = record(task, placeFixedTask(task, allocatedMinutes, blocks, planDate, now));
+
+    if (failure) {
+      return { scheduled, unscheduled, failure };
+    }
+  }
+
+  for (const task of flexibleTasks) {
+    const allocatedMinutes = allocations.get(task.taskId) ?? task.effectiveMinimumMinutes;
+    const failure = record(task, placeTask(task, allocatedMinutes, blocks));
+
+    if (failure) {
+      return { scheduled, unscheduled, failure };
+    }
+  }
+
+  return { scheduled, unscheduled, failure: null };
+}
+
 function placementFailure(task, scheduledMinutes) {
   return {
     kind: 'placement_failure',
@@ -438,6 +558,32 @@ function priorityDescending(now) {
     calculatePriority(right, now) - calculatePriority(left, now)
       || left.taskName.localeCompare(right.taskName)
   );
+}
+
+function placementComparator(now) {
+  const byPriority = priorityDescending(now);
+
+  return (left, right) => {
+    const leftDeadline = validDateTime(left.deadline);
+    const rightDeadline = validDateTime(right.deadline);
+
+    if (leftDeadline && rightDeadline && leftDeadline !== rightDeadline) {
+      return leftDeadline < rightDeadline ? -1 : 1;
+    }
+
+    if (Boolean(leftDeadline) !== Boolean(rightDeadline)) {
+      return leftDeadline ? -1 : 1;
+    }
+
+    const leftRestricted = left.executionContext !== CONTEXTS.ANY;
+    const rightRestricted = right.executionContext !== CONTEXTS.ANY;
+
+    if (leftRestricted !== rightRestricted) {
+      return leftRestricted ? -1 : 1;
+    }
+
+    return byPriority(left, right);
+  };
 }
 
 function sortSegments(segments) {
@@ -517,79 +663,66 @@ export function scheduleDay({
   const schedulableTasks = active.filter((task) => (
     task.effectiveDesiredMinutes > 0 || fixedFutureInterval(task, planDate, now)
   ));
-  const allocations = allocateDurations(schedulableTasks, availableMinutes, now);
-  const durationPlan = durationPlanSummary(schedulableTasks, allocations, availableMinutes);
-
-  let blocks = available.map((block) => ({ ...block }));
-  const orderedTasks = [...schedulableTasks].sort(priorityDescending(now));
+  const orderedTasks = [...schedulableTasks].sort(placementComparator(now));
   const fixedTasks = orderedTasks.filter((task) => task.fixed && task.fixedStart && task.fixedEnd);
   const flexibleTasks = orderedTasks.filter((task) => !fixedTasks.includes(task));
-  const scheduled = [];
-  const unscheduled = [];
 
-  for (const task of fixedTasks) {
-    const allocatedMinutes = allocations.get(task.taskId) ?? task.effectiveMinimumMinutes;
-    const result = placeFixedTask(task, allocatedMinutes, blocks, planDate, now);
-    const scheduledMinutes = result.segments.reduce((sum, segment) => (
-      sum + segment.allocatedMinutes
-    ), 0);
+  const compressionCaps = new Map();
+  let allocations = null;
+  let attempt = null;
 
-    if (scheduledMinutes < task.effectiveMinimumMinutes) {
+  while (true) {
+    allocations = withAllocationCaps(
+      allocateDurations(schedulableTasks, availableMinutes, now),
+      compressionCaps
+    );
+    attempt = attemptPlacement({
+      fixedTasks,
+      flexibleTasks,
+      allocations,
+      available,
+      planDate,
+      now
+    });
+
+    if (!attempt.failure) {
+      break;
+    }
+
+    const failedTask = attempt.failure.task;
+    const deficit = failedTask.effectiveMinimumMinutes - attempt.failure.scheduledMinutes;
+    const compression = isUserFixed(failedTask)
+      ? null
+      : distributeCompression(
+          deficit,
+          competingDonors(failedTask, schedulableTasks, allocations, available),
+          now
+        );
+
+    if (!compression) {
       return conflictResult(
         planDate,
         completed,
         availableMinutes,
         requiredMinimumMinutes,
-        placementFailure(task, scheduledMinutes)
+        placementFailure(failedTask, attempt.failure.scheduledMinutes)
       );
     }
 
-    scheduled.push(...result.segments);
-    blocks = result.blocks;
-
-    if (result.remaining > 0) {
-      unscheduled.push({
-        taskId: task.taskId,
-        taskName: task.taskName,
-        remainingMinutes: result.remaining
-      });
+    for (const item of compression) {
+      const current = allocations.get(item.task.taskId)
+        ?? item.task.effectiveMinimumMinutes;
+      compressionCaps.set(item.task.taskId, current - item.taken);
     }
   }
 
-  for (const task of flexibleTasks) {
-    const allocatedMinutes = allocations.get(task.taskId) ?? task.effectiveMinimumMinutes;
-    const result = placeTask(task, allocatedMinutes, blocks);
-    const scheduledMinutes = result.segments.reduce((sum, segment) => (
-      sum + segment.allocatedMinutes
-    ), 0);
-
-    if (scheduledMinutes < task.effectiveMinimumMinutes) {
-      return conflictResult(
-        planDate,
-        completed,
-        availableMinutes,
-        requiredMinimumMinutes,
-        placementFailure(task, scheduledMinutes)
-      );
-    }
-
-    scheduled.push(...result.segments);
-    blocks = result.blocks;
-
-    if (result.remaining > 0) {
-      unscheduled.push({
-        taskId: task.taskId,
-        taskName: task.taskName,
-        remainingMinutes: result.remaining
-      });
-    }
-  }
+  const durationPlan = durationPlanSummary(schedulableTasks, allocations, availableMinutes);
 
   return {
-    status: unscheduled.length > 0 ? 'partial' : 'ok',
+    status: attempt.unscheduled.length > 0 ? 'partial' : 'ok',
     planDate,
-    segments: sortSegments([...completed, ...scheduled]),
-    unscheduled,
-    durationPlan: withPlacedActualDurations(durationPlan, scheduled)
+    segments: sortSegments([...completed, ...attempt.scheduled]),
+    unscheduled: attempt.unscheduled,
+    durationPlan: withPlacedActualDurations(durationPlan, attempt.scheduled)
   };
 }

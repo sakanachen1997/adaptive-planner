@@ -127,3 +127,17 @@ test('urgency uses wall-clock minutes across DST start', () => {
 test('urgency ignores offset suffixes for wall-clock bucket boundaries', () => {
   assert.equal(calculateUrgency('2026-07-06T15:00:00', '2026-07-06T09:00:00+05:00'), 5);
 });
+
+test('placement score rewards blocks matching the task order preference without penalizing others', () => {
+  const eveningPreferred = {
+    energyDemand: 'low',
+    executionContext: CONTEXTS.WORK,
+    splittable: false,
+    orderPreference: 'evening'
+  };
+  const afternoonLowSlot = scoreTestInterval('2026-07-06T15:00:00');
+  const eveningLowSlot = scoreTestInterval('2026-07-06T22:00:00');
+
+  assert.equal(scorePlacement(eveningPreferred, afternoonLowSlot), 25);
+  assert.equal(scorePlacement(eveningPreferred, eveningLowSlot), 31);
+});

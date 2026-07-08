@@ -843,6 +843,236 @@ test('user-fixed task whose fixed time violates its deadline reports a deadline 
   assert.equal(result.conflict.deadlineViolations[0].deadline, `${PLAN_DATE}T19:30:00`);
 });
 
+test('deadline-constrained tasks get their windows before higher-priority unconstrained tasks', () => {
+  const result = scheduleDay({
+    planDate: PLAN_DATE,
+    now: `${PLAN_DATE}T12:23:00`,
+    availableBlocks: [
+      block('09:00', '18:00', CONTEXTS.WORK),
+      block('17:20', '23:00', CONTEXTS.HOME)
+    ],
+    protectedBlocks: [],
+    tasks: [
+      task({
+        taskName: '家务',
+        taskType: '生活杂务',
+        desiredMinutes: 40,
+        minimumMinutes: 10,
+        importance: 3
+      }),
+      task({
+        taskName: '芭蕾',
+        taskType: '运动健身',
+        desiredMinutes: 110,
+        minimumMinutes: 110,
+        importance: 3,
+        fixed: true,
+        fixedStart: '19:30',
+        fixedEnd: '21:20'
+      }),
+      task({
+        taskName: '买菜',
+        taskType: '生活杂务',
+        desiredMinutes: 40,
+        minimumMinutes: 40,
+        importance: 3,
+        executionContext: CONTEXTS.HOME,
+        deadline: `${PLAN_DATE}T21:00:00`
+      }),
+      task({
+        taskName: '吃饭',
+        taskType: '生活杂务',
+        desiredMinutes: 70,
+        minimumMinutes: 70,
+        importance: 3,
+        executionContext: CONTEXTS.HOME,
+        deadline: `${PLAN_DATE}T19:30:00`
+      }),
+      task({
+        taskName: '莉莉安娜',
+        taskType: '绘画委托副业',
+        desiredMinutes: 50,
+        minimumMinutes: 30,
+        importance: 5
+      })
+    ]
+  });
+
+  const minutesByTask = new Map();
+  for (const segment of scheduledSegments(result)) {
+    minutesByTask.set(
+      segment.taskName,
+      (minutesByTask.get(segment.taskName) ?? 0) + segment.allocatedMinutes
+    );
+  }
+  const eatSegments = scheduledSegments(result).filter((segment) => segment.taskName === '吃饭');
+  const shopSegments = scheduledSegments(result).filter((segment) => segment.taskName === '买菜');
+
+  assert.notEqual(result.status, 'conflict');
+  assert.ok(minutesByTask.get('吃饭') >= 70);
+  assert.ok(minutesByTask.get('买菜') >= 40);
+  assert.ok(minutesByTask.get('芭蕾') >= 110);
+  assert.ok(minutesByTask.get('莉莉安娜') >= 30);
+  assert.ok(minutesByTask.get('家务') >= 10);
+  assert.ok(eatSegments.every((segment) => segment.end <= `${PLAN_DATE}T19:30:00`));
+  assert.ok(shopSegments.every((segment) => segment.end <= `${PLAN_DATE}T21:00:00`));
+  assertNoOverlaps(scheduledSegments(result));
+});
+
+test('placement failure triggers proportional compression instead of a conflict', () => {
+  const result = scheduleDay({
+    planDate: PLAN_DATE,
+    now: NOW,
+    availableBlocks: [
+      block('09:00', '12:00', CONTEXTS.WORK),
+      block('18:00', '20:00', CONTEXTS.HOME)
+    ],
+    protectedBlocks: [],
+    tasks: [
+      task({
+        taskName: '高优先弹性',
+        desiredMinutes: 100,
+        minimumMinutes: 40,
+        importance: 5,
+        executionContext: CONTEXTS.HOME,
+        splittable: true,
+        minSegmentMinutes: 20
+      }),
+      task({
+        taskName: '低优先弹性',
+        desiredMinutes: 60,
+        minimumMinutes: 30,
+        importance: 1,
+        executionContext: CONTEXTS.HOME,
+        splittable: true,
+        minSegmentMinutes: 20
+      })
+    ]
+  });
+
+  const minutesByTask = new Map();
+  for (const segment of scheduledSegments(result)) {
+    minutesByTask.set(
+      segment.taskName,
+      (minutesByTask.get(segment.taskName) ?? 0) + segment.allocatedMinutes
+    );
+  }
+
+  assert.notEqual(result.status, 'conflict');
+  assert.ok(minutesByTask.get('高优先弹性') >= 40);
+  assert.ok(minutesByTask.get('低优先弹性') >= 30);
+  assert.ok(minutesByTask.get('高优先弹性') > minutesByTask.get('低优先弹性'));
+  assertNoOverlaps(scheduledSegments(result));
+});
+
+test('compression only takes time from tasks competing for the same window', () => {
+  const result = scheduleDay({
+    planDate: PLAN_DATE,
+    now: NOW,
+    availableBlocks: [
+      block('09:00', '12:00', CONTEXTS.WORK),
+      block('18:00', '20:00', CONTEXTS.HOME)
+    ],
+    protectedBlocks: [],
+    tasks: [
+      task({
+        taskName: '住家弹性',
+        desiredMinutes: 100,
+        minimumMinutes: 40,
+        importance: 5,
+        executionContext: CONTEXTS.HOME,
+        splittable: true,
+        minSegmentMinutes: 20
+      }),
+      task({
+        taskName: '工作任务',
+        desiredMinutes: 120,
+        minimumMinutes: 60,
+        importance: 4,
+        executionContext: CONTEXTS.WORK,
+        splittable: true,
+        minSegmentMinutes: 20
+      }),
+      task({
+        taskName: '被挤压者',
+        desiredMinutes: 60,
+        minimumMinutes: 60,
+        importance: 3,
+        executionContext: CONTEXTS.HOME,
+        splittable: true,
+        minSegmentMinutes: 20
+      })
+    ]
+  });
+
+  const minutesByTask = new Map();
+  for (const segment of scheduledSegments(result)) {
+    minutesByTask.set(
+      segment.taskName,
+      (minutesByTask.get(segment.taskName) ?? 0) + segment.allocatedMinutes
+    );
+  }
+
+  assert.notEqual(result.status, 'conflict');
+  assert.equal(minutesByTask.get('被挤压者'), 60);
+  assert.equal(minutesByTask.get('住家弹性'), 60);
+  assert.equal(minutesByTask.get('工作任务'), 120);
+});
+
+test('compression waterfalls to higher-protected tasks when a donor hits its minimum', () => {
+  const result = scheduleDay({
+    planDate: PLAN_DATE,
+    now: NOW,
+    availableBlocks: [
+      block('09:00', '11:00', CONTEXTS.WORK),
+      block('18:00', '21:00', CONTEXTS.HOME)
+    ],
+    protectedBlocks: [],
+    tasks: [
+      task({
+        taskName: '高保护',
+        desiredMinutes: 100,
+        minimumMinutes: 40,
+        importance: 5,
+        executionContext: CONTEXTS.HOME,
+        splittable: true,
+        minSegmentMinutes: 20
+      }),
+      task({
+        taskName: '低保护小弹性',
+        desiredMinutes: 60,
+        minimumMinutes: 50,
+        importance: 2,
+        executionContext: CONTEXTS.HOME,
+        splittable: true,
+        minSegmentMinutes: 10
+      }),
+      task({
+        taskName: '被挤压者',
+        desiredMinutes: 80,
+        minimumMinutes: 80,
+        importance: 1,
+        executionContext: CONTEXTS.HOME,
+        splittable: true,
+        minSegmentMinutes: 20
+      })
+    ]
+  });
+
+  const minutesByTask = new Map();
+  for (const segment of scheduledSegments(result)) {
+    minutesByTask.set(
+      segment.taskName,
+      (minutesByTask.get(segment.taskName) ?? 0) + segment.allocatedMinutes
+    );
+  }
+
+  assert.notEqual(result.status, 'conflict');
+  assert.equal(minutesByTask.get('被挤压者'), 80);
+  assert.equal(minutesByTask.get('低保护小弹性'), 50);
+  assert.equal(minutesByTask.get('高保护'), 50);
+});
+
 test('home-only tasks are not placed in work blocks', () => {
   const result = scheduleDay({
     planDate: PLAN_DATE,
