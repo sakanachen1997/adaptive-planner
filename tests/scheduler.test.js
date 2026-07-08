@@ -590,6 +590,112 @@ test('splittable tasks do not emit first segment shorter than their minimum segm
   assert.deepEqual(shortTaskSegments, []);
 });
 
+test('fixed task splitting an evening block does not starve other tasks below their minimums', () => {
+  const result = scheduleDay({
+    planDate: PLAN_DATE,
+    now: `${PLAN_DATE}T09:52:00`,
+    availableBlocks: [
+      block('09:00', '18:00', CONTEXTS.WORK),
+      block('17:20', '19:30', CONTEXTS.HOME),
+      block('19:30', '23:00', CONTEXTS.HOME)
+    ],
+    protectedBlocks: [],
+    tasks: [
+      task({
+        taskName: 'A',
+        taskType: '背单词',
+        desiredMinutes: 70,
+        minimumMinutes: 70,
+        importance: 3,
+        executionContext: CONTEXTS.HOME
+      }),
+      task({
+        taskName: 'B',
+        taskType: '打游戏',
+        desiredMinutes: 40,
+        minimumMinutes: 40,
+        importance: 3
+      }),
+      task({
+        taskName: 'C',
+        desiredMinutes: 110,
+        minimumMinutes: 110,
+        importance: 3,
+        fixed: true,
+        fixedStart: '19:30',
+        fixedEnd: '21:20'
+      })
+    ]
+  });
+
+  const minutesByTask = new Map();
+  for (const segment of scheduledSegments(result)) {
+    minutesByTask.set(
+      segment.taskName,
+      (minutesByTask.get(segment.taskName) ?? 0) + segment.allocatedMinutes
+    );
+  }
+
+  assert.equal(result.status, 'ok');
+  assert.equal(minutesByTask.get('A'), 70);
+  assert.equal(minutesByTask.get('B'), 40);
+  assert.equal(minutesByTask.get('C'), 110);
+  assertNoOverlaps(scheduledSegments(result));
+});
+
+test('splittable task prefers a block that fits the whole duration over splitting into an unusable tail', () => {
+  const result = scheduleDay({
+    planDate: PLAN_DATE,
+    now: NOW,
+    availableBlocks: [
+      block('17:20', '19:30', CONTEXTS.HOME),
+      block('22:30', '23:00', CONTEXTS.HOME)
+    ],
+    protectedBlocks: [],
+    tasks: [
+      task({
+        taskName: '打游戏',
+        taskType: '打游戏',
+        desiredMinutes: 40,
+        minimumMinutes: 40,
+        importance: 3
+      })
+    ]
+  });
+
+  const segments = scheduledSegments(result);
+
+  assert.equal(result.status, 'ok');
+  assert.equal(segments.length, 1);
+  assert.equal(segments[0].allocatedMinutes, 40);
+  assert.ok(segments[0].end <= `${PLAN_DATE}T19:30:00`);
+});
+
+test('placement failure conflict identifies the failing task instead of reporting minimum overflow', () => {
+  const result = scheduleDay({
+    planDate: PLAN_DATE,
+    now: NOW,
+    availableBlocks: [block('09:00', '10:00', CONTEXTS.WORK)],
+    protectedBlocks: [],
+    tasks: [
+      task({
+        taskName: '运动健身',
+        taskType: '运动健身',
+        desiredMinutes: 30,
+        minimumMinutes: 30,
+        importance: 4
+      })
+    ]
+  });
+
+  assert.equal(result.status, 'conflict');
+  assert.equal(result.conflict.kind, 'placement_failure');
+  assert.equal(result.conflict.belowMinimum.length, 1);
+  assert.equal(result.conflict.belowMinimum[0].taskName, '运动健身');
+  assert.equal(result.conflict.belowMinimum[0].minimumMinutes, 30);
+  assert.equal(result.conflict.belowMinimum[0].scheduledMinutes, 0);
+});
+
 test('home-only tasks are not placed in work blocks', () => {
   const result = scheduleDay({
     planDate: PLAN_DATE,

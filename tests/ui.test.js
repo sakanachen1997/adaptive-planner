@@ -7,6 +7,7 @@ import {
   calendarEventToPlanTask,
   calendarEventToProtectedBlock,
   actualDurationForTask,
+  conflictSummaryLines,
   editableTasksForSchedule,
   formInputForTask,
   shouldShowRecoveryActions,
@@ -121,6 +122,38 @@ test('minimum overflow conflict presentation shows recovery actions', () => {
   };
 
   assert.equal(shouldShowRecoveryActions(schedule), true);
+});
+
+test('placement failure conflict summary names the task that could not be placed', () => {
+  const lines = conflictSummaryLines({
+    kind: 'placement_failure',
+    availableMinutes: 828,
+    requiredMinimumMinutes: 220,
+    belowMinimum: [{
+      taskId: 'task-b',
+      taskName: 'B',
+      minimumMinutes: 40,
+      scheduledMinutes: 30
+    }]
+  });
+
+  assert.deepEqual(lines, [
+    '任务「B」无法放入兼容的时间块：最小需要 40 分钟，只能安排 30 分钟。',
+    '总可用时间 828 分钟，全部任务最小共需 220 分钟。'
+  ]);
+});
+
+test('minimum overflow conflict summary reports total available versus required minutes', () => {
+  const lines = conflictSummaryLines({
+    kind: 'minimum_overflow',
+    availableMinutes: 60,
+    requiredMinimumMinutes: 75,
+    belowMinimum: []
+  });
+
+  assert.deepEqual(lines, [
+    '可用时间 60 分钟，任务最小需要 75 分钟。'
+  ]);
 });
 
 test('actualDurationForTask reads computed actual duration by task id', () => {

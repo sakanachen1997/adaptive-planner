@@ -354,6 +354,21 @@ export function shouldShowRecoveryActions(schedule) {
     && schedule.conflict?.kind === 'minimum_overflow';
 }
 
+export function conflictSummaryLines(conflict) {
+  if (conflict.kind === 'placement_failure' && conflict.belowMinimum?.length) {
+    return [
+      ...conflict.belowMinimum.map((item) => (
+        `任务「${item.taskName}」无法放入兼容的时间块：最小需要 ${item.minimumMinutes} 分钟，只能安排 ${item.scheduledMinutes} 分钟。`
+      )),
+      `总可用时间 ${conflict.availableMinutes} 分钟，全部任务最小共需 ${conflict.requiredMinimumMinutes} 分钟。`
+    ];
+  }
+
+  return [
+    `可用时间 ${conflict.availableMinutes} 分钟，任务最小需要 ${conflict.requiredMinimumMinutes} 分钟。`
+  ];
+}
+
 export function actualDurationForTask(schedule, taskId) {
   return schedule?.durationPlan?.allocations?.find((item) => item.taskId === taskId) ?? null;
 }
@@ -774,18 +789,8 @@ function renderConflictPanel() {
   clear(panel);
   appendText(panel, '计划冲突', 'strong');
 
-  if (shouldShowRecoveryActions(state.schedule)) {
-    appendText(
-      panel,
-      `可用时间 ${state.schedule.conflict.availableMinutes} 分钟，任务最小需要 ${state.schedule.conflict.requiredMinimumMinutes} 分钟。`,
-      'p'
-    );
-  } else {
-    appendText(
-      panel,
-      `可用时间 ${state.schedule.conflict.availableMinutes} 分钟，任务最小需要 ${state.schedule.conflict.requiredMinimumMinutes} 分钟。`,
-      'p'
-    );
+  for (const line of conflictSummaryLines(state.schedule.conflict)) {
+    appendText(panel, line, 'p');
   }
 
   if (state.schedule.conflict.actions?.length) {

@@ -275,9 +275,20 @@ function placeTask(task, minutes, blocks) {
 
     const compatible = rankedCompatibleBlocks(task, remainingBlocks);
     let placed = false;
+    const capacityOf = (item) => intervalMinutes(
+      remainingBlocks[item.index].start,
+      remainingBlocks[item.index].end
+    );
 
     const candidates = task.splittable
-      ? compatible
+      ? [
+          ...compatible.filter((item) => capacityOf(item) >= remaining),
+          ...compatible.filter((item) => {
+            const capacity = capacityOf(item);
+            return capacity < remaining && remaining - capacity >= task.minSegmentMinutes;
+          }),
+          ...compatible
+        ]
       : [
           compatible.find((item) => intervalMinutes(
             remainingBlocks[item.index].start,
@@ -379,6 +390,18 @@ function placeFixedTask(task, allocatedMinutes, blocks, planDate, now) {
   };
 }
 
+function placementFailure(task, scheduledMinutes) {
+  return {
+    kind: 'placement_failure',
+    belowMinimum: [{
+      taskId: task.taskId,
+      taskName: task.taskName,
+      minimumMinutes: task.effectiveMinimumMinutes,
+      scheduledMinutes
+    }]
+  };
+}
+
 function priorityDescending(now) {
   return (left, right) => (
     calculatePriority(right, now) - calculatePriority(left, now)
@@ -467,7 +490,13 @@ export function scheduleDay({
     ), 0);
 
     if (scheduledMinutes < task.effectiveMinimumMinutes) {
-      return conflictResult(planDate, completed, availableMinutes, requiredMinimumMinutes);
+      return conflictResult(
+        planDate,
+        completed,
+        availableMinutes,
+        requiredMinimumMinutes,
+        placementFailure(task, scheduledMinutes)
+      );
     }
 
     scheduled.push(...result.segments);
@@ -490,7 +519,13 @@ export function scheduleDay({
     ), 0);
 
     if (scheduledMinutes < task.effectiveMinimumMinutes) {
-      return conflictResult(planDate, completed, availableMinutes, requiredMinimumMinutes);
+      return conflictResult(
+        planDate,
+        completed,
+        availableMinutes,
+        requiredMinimumMinutes,
+        placementFailure(task, scheduledMinutes)
+      );
     }
 
     scheduled.push(...result.segments);
