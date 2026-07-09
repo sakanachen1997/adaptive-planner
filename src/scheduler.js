@@ -229,6 +229,69 @@ function allocateDurations(tasks, capacityMinutes, now) {
   return new Map(weightedTasks.map(({ task, duration }) => [task.taskId, duration]));
 }
 
+function fixedAllocationBucket(task, available, planDate, now) {
+  const interval = fixedFutureInterval(task, planDate, now);
+
+  if (!interval) {
+    return task.executionContext ?? CONTEXTS.ANY;
+  }
+
+  const block = available.find((candidate) => (
+    candidate.start <= interval.start && candidate.end >= interval.end
+  ));
+
+  return block?.context ?? task.executionContext ?? CONTEXTS.ANY;
+}
+
+function allocationBucket(task, available, planDate, now) {
+  if (task.fixed && task.fixedStart && task.fixedEnd) {
+    return fixedAllocationBucket(task, available, planDate, now);
+  }
+
+  if (task.executionContext !== CONTEXTS.ANY) {
+    return task.executionContext;
+  }
+
+  const best = rankedCompatibleBlocks(task, available)[0];
+  return best?.block.context ?? CONTEXTS.ANY;
+}
+
+function capacityForBucket(bucket, available) {
+  return totalMinutes(available.filter((block) => (
+    block.context === bucket || block.context === CONTEXTS.ANY
+  )));
+}
+
+function groupedAllocations(tasks, available, now, planDate, bufferRatio) {
+  const totalDesired = tasks.reduce((sum, task) => sum + task.effectiveDesiredMinutes, 0);
+  const totalAvailable = totalMinutes(available);
+  const effectiveBufferRatio = totalDesired <= totalAvailable ? bufferRatio : 0;
+  const groups = new Map();
+  const allocations = new Map();
+
+  for (const task of tasks) {
+    const bucket = allocationBucket(task, available, planDate, now);
+    groups.set(bucket, [...(groups.get(bucket) ?? []), task]);
+  }
+
+  for (const [bucket, bucketTasks] of groups) {
+    const bucketCapacity = capacityForBucket(bucket, available);
+    const bucketMinimum = bucketTasks.reduce((sum, task) => (
+      sum + task.effectiveMinimumMinutes
+    ), 0);
+    const planningCapacity = Math.max(
+      bucketMinimum,
+      Math.floor(bucketCapacity * (1 - effectiveBufferRatio))
+    );
+
+    for (const [taskId, minutes] of allocateDurations(bucketTasks, planningCapacity, now)) {
+      allocations.set(taskId, minutes);
+    }
+  }
+
+  return allocations;
+}
+
 function durationPlanSummary(tasks, allocations, availableMinutes) {
   const desiredMinutes = tasks.reduce((sum, task) => sum + task.effectiveDesiredMinutes, 0);
   const minimumMinutes = tasks.reduce((sum, task) => sum + task.effectiveMinimumMinutes, 0);
@@ -735,11 +798,6 @@ export function scheduleDay({
   if (requiredMinimumMinutes > availableMinutes) {
     return conflictResult(planDate, completed, availableMinutes, requiredMinimumMinutes);
   }
-  const planningCapacityMinutes = Math.max(
-    requiredMinimumMinutes,
-    Math.floor(availableMinutes * (1 - bufferRatio))
-  );
-
   const schedulableTasks = active.filter((task) => (
     task.effectiveDesiredMinutes > 0 || fixedFutureInterval(task, planDate, schedulingNow)
   ));
@@ -753,7 +811,7 @@ export function scheduleDay({
 
   while (true) {
     allocations = withAllocationCaps(
-      allocateDurations(schedulableTasks, planningCapacityMinutes, now),
+      groupedAllocations(schedulableTasks, available, now, planDate, bufferRatio),
       compressionCaps
     );
     attempt = attemptPlacement({

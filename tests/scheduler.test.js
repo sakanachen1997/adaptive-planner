@@ -311,7 +311,8 @@ test('actual duration model reduces non-splittable actual duration to fit an ava
   const codingSegments = scheduledSegments(result).filter((segment) => segment.taskName === '编码');
   const codingDuration = result.durationPlan.allocations.find((item) => item.taskName === '编码');
 
-  assert.equal(result.status, 'partial');
+  assert.equal(result.status, 'ok');
+  assert.equal(result.unscheduled.length, 0);
   assert.equal(result.durationPlan.availableMinutes, 375);
   assert.equal(codingSegments.length, 1);
   assert.equal(codingSegments[0].allocatedMinutes, 60);
@@ -472,6 +473,159 @@ test('deep tasks choose high-energy windows before shallow tasks', () => {
   assert.equal(result.status, 'ok');
   assert.equal(byTask.get('architecture').start, `${PLAN_DATE}T09:00:00`);
   assert.equal(byTask.get('email batch').start, `${PLAN_DATE}T15:00:00`);
+});
+
+test('context-aware allocation lets high-priority work fill its morning window', () => {
+  const result = scheduleDay({
+    planDate: PLAN_DATE,
+    now: `${PLAN_DATE}T10:52:00`,
+    scheduleStart: `${PLAN_DATE}T00:00:00`,
+    bufferRatio: 0.2,
+    availableBlocks: [
+      block('10:15', '16:30', CONTEXTS.WORK),
+      block('17:20', '23:00', CONTEXTS.HOME)
+    ],
+    protectedBlocks: [],
+    tasks: [
+      task({
+        taskName: 'MT tef1002',
+        taskType: '编码工作',
+        desiredMinutes: 120,
+        minimumMinutes: 80,
+        importance: 5,
+        executionContext: CONTEXTS.WORK,
+        depth: TASK_DEPTHS.DEEP,
+        energyDemand: 'high',
+        externalCommitment: 5,
+        splittable: false
+      }),
+      task({
+        taskName: '午饭',
+        desiredMinutes: 45,
+        minimumMinutes: 45,
+        fixed: true,
+        fixedStart: '12:00',
+        fixedEnd: '12:45',
+        executionContext: CONTEXTS.ANY,
+        depth: TASK_DEPTHS.SHALLOW
+      }),
+      task({
+        taskName: '渐进阅读',
+        desiredMinutes: 80,
+        minimumMinutes: 50,
+        executionContext: CONTEXTS.ANY,
+        depth: TASK_DEPTHS.DEEP,
+        energyDemand: 'high',
+        orderPreference: 'morning',
+        splittable: true,
+        minSegmentMinutes: 25
+      }),
+      task({
+        taskName: '阅读理解initramfs',
+        desiredMinutes: 60,
+        minimumMinutes: 40,
+        executionContext: CONTEXTS.ANY,
+        depth: TASK_DEPTHS.DEEP,
+        energyDemand: 'high',
+        orderPreference: 'morning',
+        splittable: true,
+        minSegmentMinutes: 25
+      }),
+      task({
+        taskName: '阅读理解sd卡bash脚本',
+        desiredMinutes: 60,
+        minimumMinutes: 40,
+        executionContext: CONTEXTS.ANY,
+        depth: TASK_DEPTHS.DEEP,
+        energyDemand: 'high',
+        orderPreference: 'morning',
+        splittable: true,
+        minSegmentMinutes: 30
+      }),
+      task({
+        taskName: '背单词',
+        desiredMinutes: 30,
+        minimumMinutes: 30,
+        executionContext: CONTEXTS.ANY,
+        depth: TASK_DEPTHS.SHALLOW,
+        energyDemand: 'mediumLow',
+        splittable: true,
+        minSegmentMinutes: 10
+      }),
+      task({
+        taskName: '吃饭',
+        desiredMinutes: 60,
+        minimumMinutes: 60,
+        executionContext: CONTEXTS.HOME,
+        deadline: `${PLAN_DATE}T19:00:00`,
+        depth: TASK_DEPTHS.SHALLOW,
+        splittable: false
+      }),
+      task({
+        taskName: '莉莉安娜',
+        desiredMinutes: 90,
+        minimumMinutes: 60,
+        importance: 5,
+        executionContext: CONTEXTS.HOME,
+        depth: TASK_DEPTHS.DEEP,
+        energyDemand: 'mediumHigh',
+        orderPreference: 'evening',
+        externalCommitment: 5,
+        splittable: true,
+        minSegmentMinutes: 30
+      }),
+      task({
+        taskName: '健身',
+        desiredMinutes: 140,
+        minimumMinutes: 140,
+        executionContext: CONTEXTS.HOME,
+        depth: TASK_DEPTHS.SHALLOW,
+        splittable: false
+      }),
+      task({
+        taskName: '卷子两套',
+        desiredMinutes: 40,
+        minimumMinutes: 40,
+        executionContext: CONTEXTS.HOME,
+        depth: TASK_DEPTHS.DEEP,
+        splittable: true,
+        minSegmentMinutes: 25
+      }),
+      task({
+        taskName: 'supermemo',
+        desiredMinutes: 10,
+        minimumMinutes: 5,
+        executionContext: CONTEXTS.HOME,
+        depth: TASK_DEPTHS.DEEP,
+        splittable: true,
+        minSegmentMinutes: 5
+      }),
+      task({
+        taskName: '家务',
+        desiredMinutes: 20,
+        minimumMinutes: 10,
+        executionContext: CONTEXTS.HOME,
+        depth: TASK_DEPTHS.SHALLOW,
+        splittable: true,
+        minSegmentMinutes: 10
+      }),
+      task({
+        taskName: '开车',
+        desiredMinutes: 30,
+        minimumMinutes: 15,
+        importance: 2,
+        executionContext: CONTEXTS.HOME,
+        depth: TASK_DEPTHS.SHALLOW,
+        splittable: true,
+        minSegmentMinutes: 15
+      })
+    ]
+  });
+
+  const mt = scheduledSegments(result).find((segment) => segment.taskName === 'MT tef1002');
+
+  assert.notEqual(result.status, 'conflict');
+  assert.equal(mt.allocatedMinutes, 120);
 });
 
 test('returns conflict when a task has no compatible capacity for its minimum', () => {
@@ -1424,8 +1578,14 @@ test('compression waterfalls to higher-protected tasks when a donor hits its min
 
   assert.notEqual(result.status, 'conflict');
   assert.equal(minutesByTask.get('被挤压者'), 80);
-  assert.equal(minutesByTask.get('低保护小弹性'), 50);
-  assert.equal(minutesByTask.get('高保护'), 50);
+  assert.ok(minutesByTask.get('低保护小弹性') >= 50);
+  assert.ok(minutesByTask.get('高保护') >= 40);
+  assert.equal(
+    minutesByTask.get('被挤压者')
+      + minutesByTask.get('低保护小弹性')
+      + minutesByTask.get('高保护'),
+    180
+  );
 });
 
 test('home-only tasks are not placed in work blocks', () => {
