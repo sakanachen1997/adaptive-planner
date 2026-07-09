@@ -495,18 +495,30 @@ function withAllocationCaps(allocations, caps) {
   ]));
 }
 
+function candidateBlocksForTask(task, blocks) {
+  return blocks
+    .filter((block) => contextCompatible(task, block))
+    .map((block) => ({
+      start: block.start,
+      end: block.end,
+      context: block.context,
+      usableMinutes: usableMinutes(task, block)
+    }))
+    .filter((block) => block.usableMinutes > 0);
+}
+
 function attemptPlacement({ fixedTasks, flexibleTasks, allocations, available, planDate, now }) {
   let blocks = available.map((block) => ({ ...block }));
   const scheduled = [];
   const unscheduled = [];
 
-  const record = (task, result) => {
+  const record = (task, allocatedMinutes, candidateBlocks, result) => {
     const scheduledMinutes = result.segments.reduce((sum, segment) => (
       sum + segment.allocatedMinutes
     ), 0);
 
     if (scheduledMinutes < task.effectiveMinimumMinutes) {
-      return { task, scheduledMinutes };
+      return { task, scheduledMinutes, plannedMinutes: allocatedMinutes, candidateBlocks };
     }
 
     scheduled.push(...result.segments);
@@ -516,6 +528,10 @@ function attemptPlacement({ fixedTasks, flexibleTasks, allocations, available, p
       unscheduled.push({
         taskId: task.taskId,
         taskName: task.taskName,
+        plannedMinutes: allocatedMinutes,
+        scheduledMinutes,
+        minimumMinutes: task.effectiveMinimumMinutes,
+        candidateBlocks,
         remainingMinutes: result.remaining
       });
     }
@@ -525,7 +541,16 @@ function attemptPlacement({ fixedTasks, flexibleTasks, allocations, available, p
 
   for (const task of fixedTasks) {
     const allocatedMinutes = allocations.get(task.taskId) ?? task.effectiveMinimumMinutes;
-    const failure = record(task, placeFixedTask(task, allocatedMinutes, blocks, planDate, now));
+    const fixedInterval = fixedFutureInterval(task, planDate, now);
+    const candidateBlocks = fixedInterval
+      ? [{ ...fixedInterval, context: task.executionContext, usableMinutes: intervalMinutes(fixedInterval.start, fixedInterval.end) }]
+      : [];
+    const failure = record(
+      task,
+      allocatedMinutes,
+      candidateBlocks,
+      placeFixedTask(task, allocatedMinutes, blocks, planDate, now)
+    );
 
     if (failure) {
       return { scheduled, unscheduled, failure };
@@ -534,7 +559,8 @@ function attemptPlacement({ fixedTasks, flexibleTasks, allocations, available, p
 
   for (const task of flexibleTasks) {
     const allocatedMinutes = allocations.get(task.taskId) ?? task.effectiveMinimumMinutes;
-    const failure = record(task, placeTask(task, allocatedMinutes, blocks));
+    const candidateBlocks = candidateBlocksForTask(task, blocks);
+    const failure = record(task, allocatedMinutes, candidateBlocks, placeTask(task, allocatedMinutes, blocks));
 
     if (failure) {
       return { scheduled, unscheduled, failure };
@@ -544,14 +570,16 @@ function attemptPlacement({ fixedTasks, flexibleTasks, allocations, available, p
   return { scheduled, unscheduled, failure: null };
 }
 
-function placementFailure(task, scheduledMinutes) {
+function placementFailure(task, scheduledMinutes, plannedMinutes, candidateBlocks) {
   return {
     kind: 'placement_failure',
     belowMinimum: [{
       taskId: task.taskId,
       taskName: task.taskName,
       minimumMinutes: task.effectiveMinimumMinutes,
-      scheduledMinutes
+      scheduledMinutes,
+      plannedMinutes,
+      candidateBlocks
     }]
   };
 }
@@ -708,7 +736,12 @@ export function scheduleDay({
         completed,
         availableMinutes,
         requiredMinimumMinutes,
-        placementFailure(failedTask, attempt.failure.scheduledMinutes)
+        placementFailure(
+          failedTask,
+          attempt.failure.scheduledMinutes,
+          attempt.failure.plannedMinutes,
+          attempt.failure.candidateBlocks
+        )
       );
     }
 

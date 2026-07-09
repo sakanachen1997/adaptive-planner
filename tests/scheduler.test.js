@@ -603,6 +603,25 @@ test('splittable tasks do not emit follow-up segments shorter than their minimum
   assert.equal(result.status, 'partial');
   assert.ok(learningSegments.length > 0);
   assert.ok(learningSegments.every((segment) => segment.allocatedMinutes >= 30));
+  assert.deepEqual(result.unscheduled, [{
+    taskId: result.unscheduled[0].taskId,
+    taskName: '短尾学习',
+    plannedMinutes: 50,
+    scheduledMinutes: 30,
+    minimumMinutes: 30,
+    remainingMinutes: 20,
+    candidateBlocks: [{
+      start: `${PLAN_DATE}T09:00:00`,
+      end: `${PLAN_DATE}T09:30:00`,
+      context: CONTEXTS.WORK,
+      usableMinutes: 30
+    }, {
+      start: `${PLAN_DATE}T10:00:00`,
+      end: `${PLAN_DATE}T10:20:00`,
+      context: CONTEXTS.WORK,
+      usableMinutes: 20
+    }]
+  }]);
 });
 
 test('splittable task shorter than its minimum segment length can be scheduled as one full segment', () => {
@@ -741,6 +760,7 @@ test('placement failure conflict identifies the failing task instead of reportin
   assert.equal(result.conflict.belowMinimum[0].taskName, '运动健身');
   assert.equal(result.conflict.belowMinimum[0].minimumMinutes, 30);
   assert.equal(result.conflict.belowMinimum[0].scheduledMinutes, 0);
+  assert.deepEqual(result.conflict.belowMinimum[0].candidateBlocks, []);
 });
 
 test('task with a same-day deadline finishes before the deadline even when a later block scores higher', () => {

@@ -350,12 +350,20 @@ test('placement failure conflict summary names the task that could not be placed
       taskId: 'task-b',
       taskName: 'B',
       minimumMinutes: 40,
-      scheduledMinutes: 30
+      scheduledMinutes: 30,
+      plannedMinutes: 50,
+      candidateBlocks: [{
+        start: '2026-07-08T09:00:00',
+        end: '2026-07-08T09:30:00',
+        context: 'work',
+        usableMinutes: 30
+      }]
     }]
   });
 
   assert.deepEqual(lines, [
-    '任务「B」无法放入兼容的时间块：最小需要 40 分钟，只能安排 30 分钟。',
+    '任务「B」无法放入兼容的时间块：计划分配 50 分钟，最小需要 40 分钟，只能安排 30 分钟。',
+    '尝试过的时间块：09:00-09:30（work，可用 30 分钟）。',
     '总可用时间 828 分钟，全部任务最小共需 220 分钟。'
   ]);
 });

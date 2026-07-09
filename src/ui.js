@@ -411,6 +411,17 @@ export function shouldShowRecoveryActions(schedule) {
     && schedule.conflict?.kind === 'minimum_overflow';
 }
 
+function formatCandidateBlocks(blocks = []) {
+  if (!blocks.length) {
+    return '没有兼容的剩余时间块';
+  }
+
+  return blocks.map((block) => (
+    `${block.start.slice(11, 16)}-${block.end.slice(11, 16)}`
+      + `（${block.context}，可用 ${block.usableMinutes} 分钟）`
+  )).join('；');
+}
+
 export function conflictSummaryLines(conflict) {
   if (conflict.kind === 'deadline_violation' && conflict.deadlineViolations?.length) {
     return conflict.deadlineViolations.map((item) => (
@@ -420,9 +431,12 @@ export function conflictSummaryLines(conflict) {
 
   if (conflict.kind === 'placement_failure' && conflict.belowMinimum?.length) {
     return [
-      ...conflict.belowMinimum.map((item) => (
-        `任务「${item.taskName}」无法放入兼容的时间块：最小需要 ${item.minimumMinutes} 分钟，只能安排 ${item.scheduledMinutes} 分钟。`
-      )),
+      ...conflict.belowMinimum.flatMap((item) => [
+        `任务「${item.taskName}」无法放入兼容的时间块：`
+          + (item.plannedMinutes ? `计划分配 ${item.plannedMinutes} 分钟，` : '')
+          + `最小需要 ${item.minimumMinutes} 分钟，只能安排 ${item.scheduledMinutes} 分钟。`,
+        `尝试过的时间块：${formatCandidateBlocks(item.candidateBlocks)}。`
+      ]),
       `总可用时间 ${conflict.availableMinutes} 分钟，全部任务最小共需 ${conflict.requiredMinimumMinutes} 分钟。`
     ];
   }
@@ -1330,22 +1344,6 @@ function renderTimelineDetail(parent, selectedItem) {
   renderTimelineTaskDetail(parent, selectedItem);
 }
 
-function appendPartialSchedule(root) {
-  if (state.schedule.status !== 'partial' || !state.schedule.unscheduled?.length) {
-    return;
-  }
-
-  const partial = document.createElement('div');
-  partial.className = 'schedule-item error';
-  appendText(partial, '部分任务未完全安排：', 'strong');
-  const list = document.createElement('ul');
-  for (const item of state.schedule.unscheduled) {
-    appendText(list, `${item.taskName} 剩余 ${item.remainingMinutes} 分钟`, 'li');
-  }
-  partial.append(list);
-  root.append(partial);
-}
-
 function renderSchedule() {
   const root = element('scheduleList');
   const currentTasks = allTasks();
@@ -1385,7 +1383,6 @@ function renderSchedule() {
   layout.append(timelineView, timelineDetail);
   root.append(layout);
   renderConflictEditableTasks(root, currentTasks);
-  appendPartialSchedule(root);
   renderSyncPreview();
 }
 
