@@ -15,6 +15,7 @@ import {
   deadlineLabel,
   editableTasksForSchedule,
   removeTaskForReschedule,
+  uncompleteTaskInList,
   taskInputFromFormData,
   formInputForTask,
   shouldShowRecoveryActions,
@@ -104,6 +105,46 @@ test('removeTaskForReschedule marks a calendar-backed task skipped so sync delet
   assert.equal(updated[0].status, TASK_STATUSES.SKIPPED);
   assert.equal(updated[0].localOverride, true);
   assert.equal(updated[0].calendarEventId, 'event-1');
+});
+
+test('uncompleteTaskInList reverts a completed local task to pending and clears actual times', () => {
+  const tasks = [
+    {
+      taskId: 'task-1',
+      taskName: '已完成任务',
+      status: TASK_STATUSES.COMPLETED,
+      actualStart: '2026-07-09T10:00:00',
+      actualEnd: '2026-07-09T10:30:00'
+    }
+  ];
+
+  const updated = uncompleteTaskInList(tasks, tasks[0]);
+
+  assert.equal(updated.length, 1);
+  assert.equal(updated[0].status, TASK_STATUSES.PENDING);
+  assert.equal(updated[0].actualStart, null);
+  assert.equal(updated[0].actualEnd, null);
+  assert.equal(updated[0].taskId, 'task-1');
+});
+
+test('uncompleteTaskInList marks a calendar-backed task localOverride so readback completed is overridden', () => {
+  const calendarTask = {
+    taskId: 'task-1',
+    taskName: 'Synced',
+    calendarEventId: 'event-1',
+    status: TASK_STATUSES.COMPLETED,
+    actualStart: '2026-07-09T10:00:00',
+    actualEnd: '2026-07-09T10:30:00'
+  };
+
+  const updated = uncompleteTaskInList([], calendarTask);
+
+  assert.equal(updated.length, 1);
+  assert.equal(updated[0].status, TASK_STATUSES.PENDING);
+  assert.equal(updated[0].localOverride, true);
+  assert.equal(updated[0].calendarEventId, 'event-1');
+  assert.equal(updated[0].actualStart, null);
+  assert.equal(updated[0].actualEnd, null);
 });
 
 test('buildDebugReport serializes the full scheduling state as readable JSON', () => {

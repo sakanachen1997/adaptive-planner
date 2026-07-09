@@ -372,6 +372,16 @@ export function removeTaskForReschedule(localTasks, task) {
   return localTasks.filter((candidate) => !sameEditableTask(candidate, task));
 }
 
+export function uncompleteTaskInList(localTasks, task) {
+  return upsertLocalTask(localTasks, {
+    ...task,
+    status: TASK_STATUSES.PENDING,
+    actualStart: null,
+    actualEnd: null,
+    localOverride: Boolean(task.calendarEventId)
+  });
+}
+
 export function formInputForTask(task) {
   const taskType = task.taskType ?? '自定义';
   const defaults = TASK_TYPE_DEFAULTS[taskType] ?? TASK_TYPE_DEFAULTS['自定义'];
@@ -1324,6 +1334,47 @@ function appendRemoveButton(parent, task) {
   parent.append(remove);
 }
 
+function appendUncompleteButton(parent, task) {
+  const button = document.createElement('button');
+  button.type = 'button';
+  button.textContent = '恢复为未完成';
+  button.dataset.uncompleteTaskKey = taskEditKey(task);
+  parent.append(button);
+}
+
+function completedTaskTimeLabel(task) {
+  const start = task.actualStart ? normalizeDateTime(task.actualStart) : null;
+  const end = task.actualEnd ? normalizeDateTime(task.actualEnd) : null;
+
+  if (start && end && end > start) {
+    return `${start.slice(11, 16)} - ${end.slice(11, 16)}`;
+  }
+
+  return '已完成';
+}
+
+function renderCompletedTasks(root, tasks) {
+  const completedTasks = tasks.filter((task) => task.status === TASK_STATUSES.COMPLETED);
+
+  if (completedTasks.length === 0) {
+    return;
+  }
+
+  const wrapper = document.createElement('div');
+  wrapper.className = 'schedule-item';
+  appendText(wrapper, '已完成（误点可恢复）', 'strong');
+
+  for (const task of completedTasks) {
+    const row = document.createElement('div');
+    row.className = 'schedule-actions';
+    appendText(row, `${task.taskName}：${completedTaskTimeLabel(task)}`, 'span');
+    appendUncompleteButton(row, task);
+    wrapper.append(row);
+  }
+
+  root.append(wrapper);
+}
+
 function renderTimelineTaskDetail(parent, item) {
   const task = item.task;
   const segment = item.segment;
@@ -1359,7 +1410,11 @@ function renderTimelineTaskDetail(parent, item) {
   const actions = document.createElement('div');
   actions.className = 'schedule-actions';
   appendEditButton(actions, task);
-  appendCompleteButton(actions, segment, task);
+  if (segment.status === TASK_STATUSES.COMPLETED) {
+    appendUncompleteButton(actions, task);
+  } else {
+    appendCompleteButton(actions, segment, task);
+  }
   appendRemoveButton(actions, task);
   parent.append(actions);
 }
@@ -1428,6 +1483,7 @@ function renderSchedule() {
   layout.append(timelineView, timelineDetail);
   root.append(layout);
   renderConflictEditableTasks(root, currentTasks);
+  renderCompletedTasks(root, currentTasks);
   renderSyncPreview();
 }
 
@@ -1901,6 +1957,19 @@ function removeTask(key) {
     : '任务已删除并重排。');
 }
 
+function uncompleteTask(key) {
+  const task = findEditableTaskByKey(key);
+
+  if (!task) {
+    showMessage('找不到要恢复的任务。', true);
+    return;
+  }
+
+  state.tasks = uncompleteTaskInList(state.tasks, task);
+  recalculate();
+  showMessage('已恢复为未完成，已重新排入计划。');
+}
+
 function handleScheduleClick(event) {
   const timelineItemId = event.target.dataset.timelineItemId
     ?? event.target.closest?.('[data-timeline-item-id]')?.dataset.timelineItemId;
@@ -1922,6 +1991,13 @@ function handleScheduleClick(event) {
 
   if (removeKey) {
     removeTask(removeKey);
+    return;
+  }
+
+  const uncompleteKey = event.target.dataset.uncompleteTaskKey;
+
+  if (uncompleteKey) {
+    uncompleteTask(uncompleteKey);
     return;
   }
 
