@@ -311,7 +311,10 @@ test('actual duration model reduces non-splittable actual duration to fit an ava
   const codingSegments = scheduledSegments(result).filter((segment) => segment.taskName === '编码');
   const codingDuration = result.durationPlan.allocations.find((item) => item.taskName === '编码');
 
-  assert.equal(result.status, 'partial');
+  // 编码 is work-only; its work window is 60 min, so it is allocated and fully
+  // placed at 60. The unmet desired time is compression, not an unplaced
+  // remainder, so the day is 'ok' rather than 'partial'.
+  assert.equal(result.status, 'ok');
   assert.equal(result.durationPlan.availableMinutes, 375);
   assert.equal(codingSegments.length, 1);
   assert.equal(codingSegments[0].allocatedMinutes, 60);
@@ -1333,10 +1336,72 @@ test('compression waterfalls to higher-protected tasks when a donor hits its min
     );
   }
 
+  // Single home window that fits at minimums (170 of 180). The 10 min of spare
+  // goes mostly to the higher-protection task, and the incompressible task is
+  // fully placed. Protection order is what matters, not an exact 50/50 split.
+  const highExtra = minutesByTask.get('高保护') - 40;
+  const lowExtra = minutesByTask.get('低保护小弹性') - 50;
+
   assert.notEqual(result.status, 'conflict');
   assert.equal(minutesByTask.get('被挤压者'), 80);
-  assert.equal(minutesByTask.get('低保护小弹性'), 50);
-  assert.equal(minutesByTask.get('高保护'), 50);
+  assert.ok(highExtra > lowExtra, `high extra ${highExtra} should exceed low extra ${lowExtra}`);
+  assert.equal(minutesByTask.get('高保护') + minutesByTask.get('低保护小弹性') + minutesByTask.get('被挤压者'), 180);
+});
+
+function fullDayScenario(now) {
+  return {
+    planDate: PLAN_DATE,
+    now,
+    availableBlocks: [block('10:15', '16:30', CONTEXTS.WORK), block('17:20', '23:00', CONTEXTS.HOME)],
+    protectedBlocks: [],
+    tasks: [
+      task({ taskName: '晨读1', taskType: '复杂教程和学习', desiredMinutes: 80, minimumMinutes: 50, importance: 3, executionContext: CONTEXTS.ANY }),
+      task({ taskName: '晨读2', taskType: '复杂教程和学习', desiredMinutes: 60, minimumMinutes: 40, importance: 3, executionContext: CONTEXTS.ANY }),
+      task({ taskName: '晨读3', taskType: '复杂教程和学习', desiredMinutes: 60, minimumMinutes: 40, importance: 3, executionContext: CONTEXTS.ANY }),
+      task({ taskName: '背单词', taskType: '背单词', desiredMinutes: 30, minimumMinutes: 30, importance: 3, executionContext: CONTEXTS.ANY }),
+      task({ taskName: '吃饭', taskType: '生活杂务', desiredMinutes: 60, minimumMinutes: 60, importance: 3, executionContext: CONTEXTS.HOME }),
+      task({ taskName: '莉莉安娜', taskType: '绘画委托副业', desiredMinutes: 90, minimumMinutes: 60, importance: 5, executionContext: CONTEXTS.HOME }),
+      task({ taskName: '健身', taskType: '运动健身', desiredMinutes: 140, minimumMinutes: 140, importance: 3, executionContext: CONTEXTS.HOME }),
+      task({ taskName: '卷子', taskType: '复杂教程和学习', desiredMinutes: 40, minimumMinutes: 40, importance: 3, executionContext: CONTEXTS.HOME }),
+      task({ taskName: 'supermemo', taskType: '复杂教程和学习', desiredMinutes: 10, minimumMinutes: 5, importance: 3, executionContext: CONTEXTS.HOME }),
+      task({ taskName: '家务', taskType: '生活杂务', desiredMinutes: 20, minimumMinutes: 10, importance: 3, executionContext: CONTEXTS.HOME }),
+      task({ taskName: '开车', taskType: '打游戏', desiredMinutes: 30, minimumMinutes: 15, importance: 2, executionContext: CONTEXTS.HOME })
+    ]
+  };
+}
+
+function minutesByTask(result) {
+  const mins = new Map();
+  for (const segment of scheduledSegments(result)) {
+    mins.set(segment.taskName, (mins.get(segment.taskName) ?? 0) + segment.allocatedMinutes);
+  }
+  return mins;
+}
+
+test('per-context windows: a full evening fits without false conflict when work is roomy', () => {
+  const result = scheduleDay(fullDayScenario(`${PLAN_DATE}T09:00:00`));
+  const mins = minutesByTask(result);
+
+  assert.notEqual(result.status, 'conflict');
+  assert.ok(mins.get('开车') >= 15, `开车 got ${mins.get('开车')}`);
+  assert.equal(mins.get('健身'), 140);
+  assertNoOverlaps(scheduledSegments(result));
+});
+
+test('per-context windows: work-time task extension does not starve evening (evening allocations unchanged)', () => {
+  const early = scheduleDay(fullDayScenario(`${PLAN_DATE}T09:00:00`));
+  const late = scheduleDay(fullDayScenario(`${PLAN_DATE}T11:44:52`));
+  const earlyMins = minutesByTask(early);
+  const lateMins = minutesByTask(late);
+
+  assert.notEqual(late.status, 'conflict');
+  for (const name of ['吃饭', '莉莉安娜', '健身', '卷子', 'supermemo', '家务', '开车']) {
+    assert.equal(
+      lateMins.get(name),
+      earlyMins.get(name),
+      `${name} evening allocation changed when work window shrank: ${earlyMins.get(name)} -> ${lateMins.get(name)}`
+    );
+  }
 });
 
 test('home-only tasks are not placed in work blocks', () => {

@@ -495,7 +495,7 @@ function distributeCompression(deficit, donors, now) {
     const active = pool.filter((item) => item.slack > 0);
 
     if (active.length === 0) {
-      return null;
+      break;
     }
 
     const base = remaining;
@@ -517,7 +517,8 @@ function distributeCompression(deficit, donors, now) {
     }
   }
 
-  return pool.filter((item) => item.taken > 0);
+  const taken = pool.filter((item) => item.taken > 0);
+  return taken.length > 0 ? taken : null;
 }
 
 function withAllocationCaps(allocations, caps) {
@@ -686,6 +687,210 @@ function conflictResult(
   };
 }
 
+const FLOATING_ENUMERATION_LIMIT = 8;
+
+function scheduleWindow({ tasks, blocks, planDate, now }) {
+  const capacity = totalMinutes(blocks);
+  const ordered = [...tasks].sort(placementComparator(now));
+  const fixedTasks = ordered.filter((task) => task.fixed && task.fixedStart && task.fixedEnd);
+  const flexibleTasks = ordered.filter((task) => !fixedTasks.includes(task));
+  const compressionCaps = new Map();
+  let allocations = null;
+  let attempt = null;
+
+  while (true) {
+    allocations = withAllocationCaps(allocateDurations(tasks, capacity, now), compressionCaps);
+    attempt = attemptPlacement({ fixedTasks, flexibleTasks, allocations, available: blocks, planDate, now });
+
+    if (!attempt.failure) {
+      break;
+    }
+
+    const failedTask = attempt.failure.task;
+    const deficit = failedTask.effectiveMinimumMinutes - attempt.failure.scheduledMinutes;
+    const compression = isUserFixed(failedTask)
+      ? null
+      : distributeCompression(
+          deficit,
+          competingDonors(failedTask, tasks, allocations, blocks, attempt.scheduled),
+          now
+        );
+
+    if (!compression) {
+      return {
+        scheduled: attempt.scheduled,
+        unscheduled: attempt.unscheduled,
+        failure: attempt.failure,
+        allocations,
+        compression: Infinity
+      };
+    }
+
+    for (const item of compression) {
+      const current = allocations.get(item.task.taskId) ?? item.task.effectiveMinimumMinutes;
+      compressionCaps.set(item.task.taskId, current - item.taken);
+    }
+  }
+
+  const placedByTask = new Map();
+  for (const segment of attempt.scheduled) {
+    placedByTask.set(segment.taskId, (placedByTask.get(segment.taskId) ?? 0) + segment.allocatedMinutes);
+  }
+  const compression = tasks.reduce((sum, task) => (
+    sum + Math.max(0, task.effectiveDesiredMinutes - (placedByTask.get(task.taskId) ?? 0))
+  ), 0);
+
+  return { scheduled: attempt.scheduled, unscheduled: attempt.unscheduled, failure: null, allocations, compression };
+}
+
+function partitionWindows(blocks) {
+  const byContext = new Map();
+  for (const block of blocks) {
+    if (!byContext.has(block.context)) {
+      byContext.set(block.context, []);
+    }
+    byContext.get(block.context).push(block);
+  }
+  return byContext;
+}
+
+function fixedWindowContext(task, windowsMap, planDate, now) {
+  const interval = fixedFutureInterval(task, planDate, now);
+  if (!interval) {
+    return null;
+  }
+  for (const [context, blocks] of windowsMap) {
+    if (blocks.some((block) => block.start <= interval.start && block.end >= interval.end)) {
+      return context;
+    }
+  }
+  return null;
+}
+
+function classifyWindowTasks(schedulable, windowsMap, planDate, now) {
+  const contexts = [...windowsMap.keys()];
+  const fixedByWindow = new Map(contexts.map((context) => [context, []]));
+  const dedicatedByWindow = new Map(contexts.map((context) => [context, []]));
+  const floating = [];
+
+  for (const task of schedulable) {
+    if (task.fixed && task.fixedStart && task.fixedEnd) {
+      const candidates = contexts.filter((context) => contextCompatible(task, { context }));
+      const context = fixedWindowContext(task, windowsMap, planDate, now)
+        ?? candidates[0]
+        ?? contexts[0];
+      fixedByWindow.get(context)?.push(task);
+      continue;
+    }
+
+    const candidates = contexts.filter((context) => contextCompatible(task, { context }));
+    if (candidates.length <= 1) {
+      const context = candidates[0] ?? contexts[0];
+      dedicatedByWindow.get(context)?.push(task);
+    } else {
+      floating.push({ task, candidates });
+    }
+  }
+
+  return { fixedByWindow, dedicatedByWindow, floating };
+}
+
+function evaluateAssignment(assignment, ctx) {
+  // Windows are scheduled in sequence over a shared remaining-time pool so that
+  // blocks of different contexts that overlap in wall-clock time are never
+  // double-booked. For time-disjoint windows (the common case) this is
+  // identical to scheduling each window independently.
+  let remaining = ctx.available.map((block) => ({ ...block }));
+  const perWindow = new Map();
+
+  for (const context of ctx.orderedContexts) {
+    const blocks = remaining.filter((block) => block.context === context);
+    const tasks = [
+      ...ctx.fixedByWindow.get(context),
+      ...ctx.dedicatedByWindow.get(context),
+      ...(assignment.get(context) ?? [])
+    ];
+    const result = scheduleWindow({ tasks, blocks, planDate: ctx.planDate, now: ctx.now });
+    perWindow.set(context, result);
+    remaining = subtractIntervals(remaining, result.scheduled);
+  }
+
+  const conflicts = [...perWindow.values()].filter((w) => w.failure).map((w) => w.failure);
+  const totalCompression = [...perWindow.values()].reduce((sum, w) => (
+    sum + (w.failure ? 0 : w.compression)
+  ), 0);
+  return { perWindow, conflicts, totalCompression };
+}
+
+function betterEvaluation(current, candidate) {
+  if (!current) {
+    return candidate;
+  }
+  if (candidate.conflicts.length !== current.conflicts.length) {
+    return candidate.conflicts.length < current.conflicts.length ? candidate : current;
+  }
+  if (candidate.totalCompression !== current.totalCompression) {
+    return candidate.totalCompression < current.totalCompression ? candidate : current;
+  }
+  return current;
+}
+
+function assignmentFromIndices(floating, indices) {
+  const assignment = new Map();
+  floating.forEach((item, k) => {
+    const context = item.candidates[indices[k]];
+    assignment.set(context, [...(assignment.get(context) ?? []), item.task]);
+  });
+  return assignment;
+}
+
+function bruteForceBest(ctx, floating) {
+  const total = floating.reduce((product, item) => product * item.candidates.length, 1);
+  let best = null;
+  for (let i = 0; i < total; i += 1) {
+    let n = i;
+    const indices = floating.map((item) => {
+      const idx = n % item.candidates.length;
+      n = Math.floor(n / item.candidates.length);
+      return idx;
+    });
+    best = betterEvaluation(best, evaluateAssignment(assignmentFromIndices(floating, indices), ctx));
+  }
+  return best;
+}
+
+function greedyBest(ctx, floating) {
+  const sorted = [...floating].sort((a, b) => (
+    calculatePriority(b.task, ctx.now) - calculatePriority(a.task, ctx.now)
+      || a.task.taskName.localeCompare(b.task.taskName)
+  ));
+  const assignment = new Map();
+  for (const item of sorted) {
+    let bestContext = item.candidates[0];
+    let bestEval = null;
+    for (const context of item.candidates) {
+      const trial = new Map(assignment);
+      trial.set(context, [...(assignment.get(context) ?? []), item.task]);
+      const evaluation = evaluateAssignment(trial, ctx);
+      if (betterEvaluation(bestEval, evaluation) === evaluation) {
+        bestEval = evaluation;
+        bestContext = context;
+      }
+    }
+    assignment.set(bestContext, [...(assignment.get(bestContext) ?? []), item.task]);
+  }
+  return evaluateAssignment(assignment, ctx);
+}
+
+function selectBestAssignment(ctx, floating) {
+  if (floating.length === 0) {
+    return evaluateAssignment(new Map(), ctx);
+  }
+  return floating.length <= FLOATING_ENUMERATION_LIMIT
+    ? bruteForceBest(ctx, floating)
+    : greedyBest(ctx, floating);
+}
+
 export function scheduleDay({
   planDate,
   now,
@@ -729,77 +934,78 @@ export function scheduleDay({
   const schedulableTasks = active.filter((task) => (
     task.effectiveDesiredMinutes > 0 || fixedFutureInterval(task, planDate, schedulingNow)
   ));
-  const orderedTasks = [...schedulableTasks].sort(placementComparator(now));
-  const fixedTasks = orderedTasks.filter((task) => task.fixed && task.fixedStart && task.fixedEnd);
-  const flexibleTasks = orderedTasks.filter((task) => !fixedTasks.includes(task));
 
-  const compressionCaps = new Map();
-  let allocations = null;
-  let attempt = null;
+  const windowsMap = partitionWindows(available);
 
-  while (true) {
-    allocations = withAllocationCaps(
-      allocateDurations(schedulableTasks, availableMinutes, now),
-      compressionCaps
-    );
-    attempt = attemptPlacement({
-      fixedTasks,
-      flexibleTasks,
-      allocations,
-      available,
+  if (windowsMap.size === 0) {
+    return {
+      status: 'ok',
       planDate,
-      now: schedulingNow
-    });
-
-    if (!attempt.failure) {
-      break;
-    }
-
-    const failedTask = attempt.failure.task;
-    const deficit = failedTask.effectiveMinimumMinutes - attempt.failure.scheduledMinutes;
-    const compression = isUserFixed(failedTask)
-      ? null
-      : distributeCompression(
-          deficit,
-          competingDonors(
-            failedTask,
-            schedulableTasks,
-            allocations,
-            available,
-            attempt.scheduled
-          ),
-          now
-        );
-
-    if (!compression) {
-      return conflictResult(
-        planDate,
-        completed,
-        availableMinutes,
-        requiredMinimumMinutes,
-        placementFailure(
-          failedTask,
-          attempt.failure.scheduledMinutes,
-          attempt.failure.plannedMinutes,
-          attempt.failure.candidateBlocks
-        )
-      );
-    }
-
-    for (const item of compression) {
-      const current = allocations.get(item.task.taskId)
-        ?? item.task.effectiveMinimumMinutes;
-      compressionCaps.set(item.task.taskId, current - item.taken);
-    }
+      segments: sortSegments(completed),
+      unscheduled: [],
+      durationPlan: withPlacedActualDurations(
+        durationPlanSummary(schedulableTasks, new Map(), availableMinutes),
+        []
+      )
+    };
   }
 
-  const durationPlan = durationPlanSummary(schedulableTasks, allocations, availableMinutes);
+  const { fixedByWindow, dedicatedByWindow, floating } = classifyWindowTasks(
+    schedulableTasks,
+    windowsMap,
+    planDate,
+    schedulingNow
+  );
+  // Schedule concrete-context windows before the shared "any" window so that
+  // context-restricted tasks claim overlapping time before flexible ones.
+  const orderedContexts = [...windowsMap.keys()].sort((left, right) => (
+    (left === CONTEXTS.ANY ? 1 : 0) - (right === CONTEXTS.ANY ? 1 : 0)
+  ));
+  const best = selectBestAssignment(
+    {
+      fixedByWindow,
+      dedicatedByWindow,
+      windowsMap,
+      available,
+      orderedContexts,
+      planDate,
+      now: schedulingNow
+    },
+    floating
+  );
+
+  if (best.conflicts.length > 0) {
+    const failure = best.conflicts[0];
+    return conflictResult(
+      planDate,
+      completed,
+      availableMinutes,
+      requiredMinimumMinutes,
+      placementFailure(
+        failure.task,
+        failure.scheduledMinutes,
+        failure.plannedMinutes,
+        failure.candidateBlocks
+      )
+    );
+  }
+
+  const windowResults = [...best.perWindow.values()];
+  const scheduled = windowResults.flatMap((w) => w.scheduled);
+  const unscheduled = windowResults.flatMap((w) => w.unscheduled);
+  const mergedAllocations = new Map();
+  for (const w of windowResults) {
+    for (const [taskId, minutes] of w.allocations) {
+      mergedAllocations.set(taskId, minutes);
+    }
+  }
+  const durationPlan = durationPlanSummary(schedulableTasks, mergedAllocations, availableMinutes);
 
   return {
-    status: attempt.unscheduled.length > 0 ? 'partial' : 'ok',
+    status: unscheduled.length > 0 ? 'partial' : 'ok',
     planDate,
-    segments: sortSegments([...completed, ...attempt.scheduled]),
-    unscheduled: attempt.unscheduled,
-    durationPlan: withPlacedActualDurations(durationPlan, attempt.scheduled)
+    segments: sortSegments([...completed, ...scheduled]),
+    unscheduled,
+    durationPlan: withPlacedActualDurations(durationPlan, scheduled)
   };
 }
