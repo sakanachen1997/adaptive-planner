@@ -1,4 +1,4 @@
-# Adaptive Planner add
+# Adaptive Planner 
 
 Adaptive Planner 是一个中文日程规划应用。它会根据当天可用时间、任务权重、最短执行时长、截止时间、任务类型、精力需求、工作或居家场景，以及 Google Calendar 中已有的固定事件，重新安排当天仍可调整的任务。
 
