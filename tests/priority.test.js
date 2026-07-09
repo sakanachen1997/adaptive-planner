@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { CONTEXTS, createTask } from '../src/models.js';
+import { CONTEXTS, TASK_DEPTHS, createTask } from '../src/models.js';
 import { calculatePriority, calculateUrgency, scorePlacement } from '../src/priority.js';
 
 function scoreTestTask(energyDemand) {
@@ -140,4 +140,24 @@ test('placement score rewards blocks matching the task order preference without 
 
   assert.equal(scorePlacement(eveningPreferred, afternoonLowSlot), 25);
   assert.equal(scorePlacement(eveningPreferred, eveningLowSlot), 31);
+});
+
+test('deep tasks prefer high-energy slots and shallow tasks prefer low-energy slots', () => {
+  const deepTask = {
+    energyDemand: 'high',
+    executionContext: CONTEXTS.WORK,
+    splittable: false,
+    depth: TASK_DEPTHS.DEEP
+  };
+  const shallowTask = {
+    energyDemand: 'low',
+    executionContext: CONTEXTS.WORK,
+    splittable: false,
+    depth: TASK_DEPTHS.SHALLOW
+  };
+  const morning = scoreTestInterval('2026-07-06T09:00:00');
+  const afternoon = scoreTestInterval('2026-07-06T15:00:00');
+
+  assert.ok(scorePlacement(deepTask, morning) > scorePlacement(deepTask, afternoon));
+  assert.ok(scorePlacement(shallowTask, afternoon) > scorePlacement(shallowTask, morning));
 });

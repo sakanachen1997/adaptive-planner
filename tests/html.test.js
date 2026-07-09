@@ -13,6 +13,7 @@ test('task form fields have visible labels', () => {
     '重要性',
     '截止时间（任务须在此之前完成）',
     '执行场景',
+    '任务深度',
     '精力需求',
     '体力需求',
     '顺序偏好',
@@ -37,6 +38,7 @@ test('task form exposes every task type preset field as editable controls', () =
     'energyDemand',
     'physicalDemand',
     'orderPreference',
+    'depth',
     'splittable',
     'minSegmentMinutes',
     'externalCommitment'
@@ -71,6 +73,6 @@ test('calendar controls distinguish read-only import from calendar publishing', 
 });
 
 test('page cache-busts static assets after behavior changes', () => {
-  assert.match(html, /href="\.\/src\/styles\.css\?v=\d{8}-stable-now"/);
-  assert.match(html, /src="\.\/src\/main\.js\?v=\d{8}-stable-now"/);
+  assert.match(html, /href="\.\/src\/styles\.css\?v=\d{8}-newport-depth"/);
+  assert.match(html, /src="\.\/src\/main\.js\?v=\d{8}-newport-depth"/);
 });

@@ -3,6 +3,7 @@ import {
   CONTEXTS,
   ORDER_PREFERENCES,
   TASK_STATUSES,
+  TASK_DEPTHS,
   TASK_TYPE_DEFAULTS,
   createTask
 } from './models.js';
@@ -58,6 +59,11 @@ const ORDER_PREFERENCE_OPTIONS = Object.freeze([
   { value: ORDER_PREFERENCES.AFTERNOON, label: '下午' },
   { value: ORDER_PREFERENCES.EVENING, label: '晚上' },
   { value: ORDER_PREFERENCES.ANY, label: '不限' }
+]);
+
+const TASK_DEPTH_OPTIONS = Object.freeze([
+  { value: TASK_DEPTHS.DEEP, label: '深度任务' },
+  { value: TASK_DEPTHS.SHALLOW, label: '浅层任务' }
 ]);
 
 const DEFAULT_MESSAGE = '先生成可用时间块并添加任务，然后点击调度。';
@@ -384,6 +390,7 @@ export function formInputForTask(task) {
     importance: String(task.importance ?? ''),
     deadline: task.deadline ? normalizeDateTime(task.deadline).slice(0, 16) : '',
     executionContext: task.executionContext ?? defaults.executionContext,
+    depth: task.depth ?? defaults.depth,
     energyDemand: task.energyDemand ?? defaults.energyDemand,
     physicalDemand: task.physicalDemand ?? defaults.physicalDemand,
     orderPreference: task.orderPreference ?? defaults.orderPreference,
@@ -649,6 +656,7 @@ export function buildDebugReport({
   planDate,
   now,
   scheduleStart = null,
+  bufferRatio = null,
   availableBlocks = [],
   protectedBlocks = [],
   tasks = [],
@@ -661,6 +669,7 @@ export function buildDebugReport({
       planDate,
       now,
       scheduleStart,
+      bufferRatio,
       availableBlocks,
       protectedBlocks,
       tasks,
@@ -1051,6 +1060,7 @@ function renderSelectOptions(name, options) {
 }
 
 function renderTaskPresetFieldOptions() {
+  renderSelectOptions('depth', TASK_DEPTH_OPTIONS);
   renderSelectOptions('energyDemand', ENERGY_DEMAND_OPTIONS);
   renderSelectOptions('physicalDemand', PHYSICAL_DEMAND_OPTIONS);
   renderSelectOptions('orderPreference', ORDER_PREFERENCE_OPTIONS);
@@ -1065,6 +1075,7 @@ function applyTaskTypePreset(taskType) {
   }
 
   form.elements.executionContext.value = defaults.executionContext;
+  form.elements.depth.value = defaults.depth;
   form.elements.energyDemand.value = defaults.energyDemand;
   form.elements.physicalDemand.value = defaults.physicalDemand;
   form.elements.orderPreference.value = defaults.orderPreference;
@@ -1466,6 +1477,7 @@ function recalculate() {
     planDate: state.planDate,
     now: localNowString(),
     scheduleStart: scheduleStartForDate(state.planDate),
+    bufferRatio: 0.2,
     availableBlocks: concreteAvailableBlocks(),
     protectedBlocks: protectedBlocksFromCalendar(),
     tasks: allTasks()
@@ -1605,6 +1617,7 @@ export function taskInputFromFormData(data) {
     importance: data.get('importance'),
     deadline: data.get('deadline'),
     executionContext: data.get('executionContext'),
+    depth: data.get('depth'),
     energyDemand: data.get('energyDemand'),
     physicalDemand: data.get('physicalDemand'),
     orderPreference: data.get('orderPreference'),
@@ -1649,6 +1662,7 @@ function fillTaskForm(task) {
   form.elements.importance.value = input.importance;
   form.elements.deadline.value = input.deadline;
   form.elements.executionContext.value = input.executionContext;
+  form.elements.depth.value = input.depth;
   form.elements.energyDemand.value = input.energyDemand;
   form.elements.physicalDemand.value = input.physicalDemand;
   form.elements.orderPreference.value = input.orderPreference;
@@ -1835,6 +1849,7 @@ function currentDebugReport() {
     planDate: state.planDate,
     now: localNowString(),
     scheduleStart,
+    bufferRatio: 0.2,
     availableBlocks: concreteAvailableBlocks(),
     protectedBlocks: protectedBlocksFromCalendar(),
     tasks: allTasks(),

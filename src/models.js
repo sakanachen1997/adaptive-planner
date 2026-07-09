@@ -22,6 +22,11 @@ export const ORDER_PREFERENCES = Object.freeze({
   ANY: 'any'
 });
 
+export const TASK_DEPTHS = Object.freeze({
+  DEEP: 'deep',
+  SHALLOW: 'shallow'
+});
+
 function freezeDefaults(defaults) {
   for (const value of Object.values(defaults)) {
     Object.freeze(value);
@@ -31,6 +36,7 @@ function freezeDefaults(defaults) {
 
 export const TASK_TYPE_DEFAULTS = freezeDefaults({
   编码工作: {
+    depth: TASK_DEPTHS.DEEP,
     energyDemand: 'high',
     physicalDemand: 'low',
     splittable: false,
@@ -40,6 +46,7 @@ export const TASK_TYPE_DEFAULTS = freezeDefaults({
     externalCommitment: 4
   },
   复杂教程和学习: {
+    depth: TASK_DEPTHS.DEEP,
     energyDemand: 'high',
     physicalDemand: 'low',
     splittable: true,
@@ -49,6 +56,7 @@ export const TASK_TYPE_DEFAULTS = freezeDefaults({
     externalCommitment: 2
   },
   背单词: {
+    depth: TASK_DEPTHS.SHALLOW,
     energyDemand: 'mediumLow',
     physicalDemand: 'low',
     splittable: true,
@@ -58,6 +66,7 @@ export const TASK_TYPE_DEFAULTS = freezeDefaults({
     externalCommitment: 1
   },
   打游戏: {
+    depth: TASK_DEPTHS.SHALLOW,
     energyDemand: 'low',
     physicalDemand: 'low',
     splittable: true,
@@ -67,6 +76,7 @@ export const TASK_TYPE_DEFAULTS = freezeDefaults({
     externalCommitment: 0
   },
   运动健身: {
+    depth: TASK_DEPTHS.SHALLOW,
     energyDemand: 'medium',
     physicalDemand: 'high',
     splittable: false,
@@ -76,6 +86,7 @@ export const TASK_TYPE_DEFAULTS = freezeDefaults({
     externalCommitment: 2
   },
   绘画委托副业: {
+    depth: TASK_DEPTHS.DEEP,
     energyDemand: 'mediumHigh',
     physicalDemand: 'low',
     splittable: true,
@@ -85,6 +96,7 @@ export const TASK_TYPE_DEFAULTS = freezeDefaults({
     externalCommitment: 4
   },
   生活杂务: {
+    depth: TASK_DEPTHS.SHALLOW,
     energyDemand: 'low',
     physicalDemand: 'variable',
     splittable: true,
@@ -94,6 +106,7 @@ export const TASK_TYPE_DEFAULTS = freezeDefaults({
     externalCommitment: 1
   },
   自定义: {
+    depth: TASK_DEPTHS.SHALLOW,
     energyDemand: 'medium',
     physicalDemand: 'low',
     splittable: true,
@@ -157,6 +170,10 @@ function valueOrDefault(input, fieldName, defaultValue) {
   return Object.hasOwn(input, fieldName) ? input[fieldName] : defaultValue;
 }
 
+function taskDepth(value, defaultValue) {
+  return Object.values(TASK_DEPTHS).includes(value) ? value : defaultValue;
+}
+
 export function createTask(input) {
   const taskType = normalizeTaskType(input.taskType);
   const defaults = TASK_TYPE_DEFAULTS[taskType];
@@ -182,6 +199,7 @@ export function createTask(input) {
     importance: importanceNumber(input.importance),
     deadline: input.deadline || null,
     executionContext: input.executionContext ?? defaults.executionContext,
+    depth: taskDepth(input.depth, defaults.depth),
     fixed: Boolean(input.fixed),
     fixedStart: input.fixedStart || null,
     fixedEnd: input.fixedEnd || null,

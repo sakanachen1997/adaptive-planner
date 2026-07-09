@@ -1,4 +1,4 @@
-import { CONTEXTS } from './models.js';
+import { CONTEXTS, TASK_DEPTHS } from './models.js';
 import { minutesBetween, normalizeDateTime } from './time.js';
 
 const ENERGY_SCORE = Object.freeze({
@@ -65,11 +65,13 @@ export function calculatePriority(task, now = new Date()) {
   const urgency = calculateUrgency(task.deadline, now);
   const desiredMinutes = Math.max(1, Number(task.desiredMinutes ?? 1));
   const externalCommitment = Number(task.externalCommitment ?? 0);
+  const depthBoost = task.depth === TASK_DEPTHS.DEEP ? 6 : 0;
 
   return importance * 10
     + urgency * 6
     + Math.sqrt(desiredMinutes)
-    + externalCommitment * 4;
+    + externalCommitment * 4
+    + depthBoost;
 }
 
 export function energyLevelForHour(hour) {
@@ -111,6 +113,11 @@ export function scorePlacement(task, interval) {
   const preferenceFit = preference !== 'any' && periodForHour(startHour) === preference
     ? 6
     : 0;
+  const depthFit = task.depth === TASK_DEPTHS.DEEP
+    ? { high: 14, medium: 4, low: -14 }[slotEnergy]
+    : task.depth === TASK_DEPTHS.SHALLOW
+      ? { high: -4, medium: 4, low: 10 }[slotEnergy]
+      : 0;
 
-  return energyFit * 4 + contextFit + gapFit + preferenceFit;
+  return energyFit * 4 + contextFit + gapFit + preferenceFit + depthFit;
 }

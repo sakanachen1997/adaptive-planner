@@ -111,6 +111,7 @@ test('buildDebugReport serializes the full scheduling state as readable JSON', (
     planDate: '2026-07-08',
     now: '2026-07-08T12:23:00',
     scheduleStart: '2026-07-08T00:00:00',
+    bufferRatio: 0.2,
     availableBlocks: [
       { start: '2026-07-08T09:00:00', end: '2026-07-08T18:00:00', context: 'work' }
     ],
@@ -145,6 +146,7 @@ test('buildDebugReport serializes the full scheduling state as readable JSON', (
   assert.equal(parsed.planDate, '2026-07-08');
   assert.equal(parsed.now, '2026-07-08T12:23:00');
   assert.equal(parsed.scheduleStart, '2026-07-08T00:00:00');
+  assert.equal(parsed.bufferRatio, 0.2);
   assert.equal(parsed.availableBlocks.length, 1);
   assert.equal(parsed.protectedBlocks[0].summary, '例会');
   assert.equal(parsed.tasks[0].taskName, '买菜');
@@ -197,6 +199,7 @@ test('formInputForTask preserves task fields as form-ready values', () => {
     importance: 4,
     deadline: '2026-07-07T18:30:00',
     executionContext: 'home',
+    depth: 'deep',
     energyDemand: 'low',
     physicalDemand: 'high',
     orderPreference: 'evening',
@@ -214,6 +217,7 @@ test('formInputForTask preserves task fields as form-ready values', () => {
     importance: '4',
     deadline: '2026-07-07T18:30',
     executionContext: 'home',
+    depth: 'deep',
     energyDemand: 'low',
     physicalDemand: 'high',
     orderPreference: 'evening',
@@ -235,6 +239,7 @@ test('fixed task form input derives desired and minimum duration from fixed time
     ['importance', '3'],
     ['deadline', ''],
     ['executionContext', 'home'],
+    ['depth', 'shallow'],
     ['energyDemand', 'medium'],
     ['physicalDemand', 'high'],
     ['orderPreference', 'evening'],
@@ -259,6 +264,7 @@ test('fixed task form input rejects non-positive fixed time range', () => {
     ['importance', '3'],
     ['deadline', ''],
     ['executionContext', 'any'],
+    ['depth', 'deep'],
     ['energyDemand', 'medium'],
     ['physicalDemand', 'low'],
     ['orderPreference', 'any'],
@@ -280,6 +286,7 @@ test('non-fixed task form input still requires desired and minimum duration', ()
     ['importance', '3'],
     ['deadline', ''],
     ['executionContext', 'any'],
+    ['depth', 'deep'],
     ['energyDemand', 'medium'],
     ['physicalDemand', 'low'],
     ['orderPreference', 'any'],

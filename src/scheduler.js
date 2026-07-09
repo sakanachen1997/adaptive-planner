@@ -1,4 +1,4 @@
-import { CONTEXTS, TASK_STATUSES } from './models.js';
+import { CONTEXTS, TASK_DEPTHS, TASK_STATUSES } from './models.js';
 import { calculatePriority, scorePlacement } from './priority.js';
 import {
   addMinutes,
@@ -645,6 +645,15 @@ function placementComparator(now) {
       return leftRestricted ? -1 : 1;
     }
 
+    if (left.depth !== right.depth) {
+      if (left.depth === TASK_DEPTHS.DEEP) {
+        return -1;
+      }
+      if (right.depth === TASK_DEPTHS.DEEP) {
+        return 1;
+      }
+    }
+
     return byPriority(left, right);
   };
 }
@@ -690,6 +699,7 @@ export function scheduleDay({
   planDate,
   now,
   scheduleStart = now,
+  bufferRatio = 0,
   availableBlocks = [],
   protectedBlocks = [],
   tasks = []
@@ -725,6 +735,10 @@ export function scheduleDay({
   if (requiredMinimumMinutes > availableMinutes) {
     return conflictResult(planDate, completed, availableMinutes, requiredMinimumMinutes);
   }
+  const planningCapacityMinutes = Math.max(
+    requiredMinimumMinutes,
+    Math.floor(availableMinutes * (1 - bufferRatio))
+  );
 
   const schedulableTasks = active.filter((task) => (
     task.effectiveDesiredMinutes > 0 || fixedFutureInterval(task, planDate, schedulingNow)
@@ -739,7 +753,7 @@ export function scheduleDay({
 
   while (true) {
     allocations = withAllocationCaps(
-      allocateDurations(schedulableTasks, availableMinutes, now),
+      allocateDurations(schedulableTasks, planningCapacityMinutes, now),
       compressionCaps
     );
     attempt = attemptPlacement({

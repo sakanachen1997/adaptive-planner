@@ -1,10 +1,12 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { CONTEXTS, TASK_TYPE_DEFAULTS, createTask } from '../src/models.js';
+import { CONTEXTS, TASK_DEPTHS, TASK_TYPE_DEFAULTS, createTask } from '../src/models.js';
 
 test('task type defaults include core user task types', () => {
   assert.equal(TASK_TYPE_DEFAULTS['编码工作'].energyDemand, 'high');
+  assert.equal(TASK_TYPE_DEFAULTS['编码工作'].depth, TASK_DEPTHS.DEEP);
   assert.equal(TASK_TYPE_DEFAULTS['背单词'].splittable, true);
+  assert.equal(TASK_TYPE_DEFAULTS['背单词'].depth, TASK_DEPTHS.SHALLOW);
   assert.equal(TASK_TYPE_DEFAULTS['运动健身'].executionContext, CONTEXTS.HOME);
   assert.equal(TASK_TYPE_DEFAULTS['绘画委托副业'].externalCommitment, 4);
 });
@@ -23,6 +25,20 @@ test('createTask applies defaults and explicit overrides for vocabulary tasks', 
   assert.equal(task.minSegmentMinutes, 10);
   assert.equal(task.executionContext, CONTEXTS.ANY);
   assert.equal(task.status, 'pending');
+  assert.equal(task.depth, TASK_DEPTHS.SHALLOW);
+});
+
+test('createTask accepts explicit depth overrides', () => {
+  const task = createTask({
+    taskName: '战略复盘',
+    taskType: '自定义',
+    desiredMinutes: 60,
+    minimumMinutes: 30,
+    importance: 4,
+    depth: TASK_DEPTHS.DEEP
+  });
+
+  assert.equal(task.depth, TASK_DEPTHS.DEEP);
 });
 
 test('createTask throws RangeError for invalid numeric fields', () => {

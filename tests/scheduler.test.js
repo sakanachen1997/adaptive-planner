@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { CONTEXTS, TASK_STATUSES, createTask } from '../src/models.js';
+import { CONTEXTS, TASK_DEPTHS, TASK_STATUSES, createTask } from '../src/models.js';
 import { scheduleDay } from '../src/scheduler.js';
 
 const PLAN_DATE = '2026-07-06';
@@ -351,6 +351,57 @@ test('actual duration model reports conflict only when minimums cannot fit', () 
   ]);
 });
 
+test('buffer ratio reserves slack from desired time without violating minimums', () => {
+  const result = scheduleDay({
+    planDate: PLAN_DATE,
+    now: NOW,
+    bufferRatio: 0.2,
+    availableBlocks: [block('09:00', '10:40', CONTEXTS.WORK)],
+    protectedBlocks: [],
+    tasks: [
+      task({
+        taskName: 'deep work',
+        desiredMinutes: 100,
+        minimumMinutes: 60,
+        importance: 5,
+        executionContext: CONTEXTS.WORK,
+        depth: TASK_DEPTHS.DEEP
+      })
+    ]
+  });
+
+  const segment = scheduledSegments(result)[0];
+
+  assert.equal(result.status, 'ok');
+  assert.equal(segment.allocatedMinutes, 80);
+  assert.equal(result.durationPlan.availableMinutes, 100);
+});
+
+test('buffer ratio is ignored before it can push tasks below their minimums', () => {
+  const result = scheduleDay({
+    planDate: PLAN_DATE,
+    now: NOW,
+    bufferRatio: 0.2,
+    availableBlocks: [block('09:00', '10:40', CONTEXTS.WORK)],
+    protectedBlocks: [],
+    tasks: [
+      task({
+        taskName: 'minimum protected',
+        desiredMinutes: 100,
+        minimumMinutes: 90,
+        importance: 5,
+        executionContext: CONTEXTS.WORK,
+        depth: TASK_DEPTHS.DEEP
+      })
+    ]
+  });
+
+  const segment = scheduledSegments(result)[0];
+
+  assert.equal(result.status, 'ok');
+  assert.equal(segment.allocatedMinutes, 90);
+});
+
 test('does not overlap scheduled segments when available blocks overlap across contexts', () => {
   const result = scheduleDay({
     planDate: PLAN_DATE,
@@ -383,6 +434,44 @@ test('does not overlap scheduled segments when available blocks overlap across c
   assert.equal(result.status, 'ok');
   assert.equal(segments.length, 2);
   assertNoOverlaps(segments);
+});
+
+test('deep tasks choose high-energy windows before shallow tasks', () => {
+  const result = scheduleDay({
+    planDate: PLAN_DATE,
+    now: NOW,
+    availableBlocks: [
+      block('09:00', '10:00', CONTEXTS.WORK),
+      block('15:00', '16:00', CONTEXTS.WORK)
+    ],
+    protectedBlocks: [],
+    tasks: [
+      task({
+        taskName: 'email batch',
+        desiredMinutes: 60,
+        minimumMinutes: 60,
+        importance: 3,
+        executionContext: CONTEXTS.WORK,
+        energyDemand: 'low',
+        depth: TASK_DEPTHS.SHALLOW
+      }),
+      task({
+        taskName: 'architecture',
+        desiredMinutes: 60,
+        minimumMinutes: 60,
+        importance: 3,
+        executionContext: CONTEXTS.WORK,
+        energyDemand: 'high',
+        depth: TASK_DEPTHS.DEEP
+      })
+    ]
+  });
+
+  const byTask = new Map(scheduledSegments(result).map((segment) => [segment.taskName, segment]));
+
+  assert.equal(result.status, 'ok');
+  assert.equal(byTask.get('architecture').start, `${PLAN_DATE}T09:00:00`);
+  assert.equal(byTask.get('email batch').start, `${PLAN_DATE}T15:00:00`);
 });
 
 test('returns conflict when a task has no compatible capacity for its minimum', () => {
