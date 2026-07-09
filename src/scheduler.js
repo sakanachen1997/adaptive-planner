@@ -428,10 +428,45 @@ function isUserFixed(task) {
   return Boolean(task.fixed && task.fixedStart && task.fixedEnd);
 }
 
-function competingDonors(failedTask, tasks, allocations, available) {
+function intervalsOverlap(left, right) {
+  return left.start < right.end && right.start < left.end;
+}
+
+function taskCapacityInterval(task, block) {
+  const minutes = usableMinutes(task, block);
+
+  if (minutes <= 0) {
+    return null;
+  }
+
+  return {
+    start: block.start,
+    end: addMinutes(block.start, minutes)
+  };
+}
+
+function consumesCompatibleCapacity(segment, failedTask, available) {
+  return available.some((block) => {
+    if (!contextCompatible(failedTask, block)) {
+      return false;
+    }
+
+    const capacityInterval = taskCapacityInterval(failedTask, block);
+    return capacityInterval ? intervalsOverlap(segment, capacityInterval) : false;
+  });
+}
+
+function competingDonors(failedTask, tasks, allocations, available, placedSegments) {
+  const competingTaskIds = new Set(
+    placedSegments
+      .filter((segment) => consumesCompatibleCapacity(segment, failedTask, available))
+      .map((segment) => segment.taskId)
+  );
+
   return tasks
     .filter((task) => task.taskId !== failedTask.taskId)
     .filter((task) => !isUserFixed(task))
+    .filter((task) => competingTaskIds.has(task.taskId))
     .map((task) => ({
       task,
       slack: (allocations.get(task.taskId) ?? task.effectiveMinimumMinutes)
@@ -439,10 +474,7 @@ function competingDonors(failedTask, tasks, allocations, available) {
     }))
     .filter((item) => item.slack > 0)
     .filter((item) => available.some((block) => (
-      contextCompatible(failedTask, block)
-        && usableMinutes(failedTask, block) > 0
-        && contextCompatible(item.task, block)
-        && usableMinutes(item.task, block) > 0
+      contextCompatible(item.task, block) && usableMinutes(item.task, block) > 0
     )));
 }
 
@@ -726,7 +758,13 @@ export function scheduleDay({
       ? null
       : distributeCompression(
           deficit,
-          competingDonors(failedTask, schedulableTasks, allocations, available),
+          competingDonors(
+            failedTask,
+            schedulableTasks,
+            allocations,
+            available,
+            attempt.scheduled
+          ),
           now
         );
 

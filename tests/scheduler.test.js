@@ -1086,6 +1086,140 @@ test('compression only takes time from tasks competing for the same window', () 
   assert.equal(minutesByTask.get('工作任务'), 120);
 });
 
+test('home compression does not shorten any-context tasks already placed at work', () => {
+  const result = scheduleDay({
+    planDate: PLAN_DATE,
+    now: `${PLAN_DATE}T09:21:00`,
+    availableBlocks: [
+      block('08:00', '16:30', CONTEXTS.WORK),
+      block('17:20', '23:00', CONTEXTS.HOME)
+    ],
+    protectedBlocks: [],
+    tasks: [
+      task({
+        taskName: 'lunch',
+        desiredMinutes: 45,
+        minimumMinutes: 45,
+        fixed: true,
+        fixedStart: '12:00',
+        fixedEnd: '12:45',
+        executionContext: CONTEXTS.ANY
+      }),
+      task({
+        taskName: 'dinner',
+        desiredMinutes: 60,
+        minimumMinutes: 60,
+        executionContext: CONTEXTS.HOME,
+        deadline: `${PLAN_DATE}T19:00:00`
+      }),
+      task({
+        taskName: 'drawing',
+        desiredMinutes: 80,
+        minimumMinutes: 50,
+        importance: 5,
+        executionContext: CONTEXTS.HOME,
+        splittable: true,
+        minSegmentMinutes: 30
+      }),
+      task({
+        taskName: 'fitness',
+        desiredMinutes: 140,
+        minimumMinutes: 140,
+        executionContext: CONTEXTS.HOME,
+        splittable: false
+      }),
+      task({
+        taskName: 'exam',
+        desiredMinutes: 40,
+        minimumMinutes: 40,
+        executionContext: CONTEXTS.HOME,
+        splittable: true,
+        minSegmentMinutes: 25
+      }),
+      task({
+        taskName: 'chores',
+        desiredMinutes: 20,
+        minimumMinutes: 10,
+        executionContext: CONTEXTS.HOME,
+        splittable: true,
+        minSegmentMinutes: 10
+      }),
+      task({
+        taskName: 'driving',
+        desiredMinutes: 30,
+        minimumMinutes: 15,
+        executionContext: CONTEXTS.HOME,
+        splittable: true,
+        minSegmentMinutes: 15
+      }),
+      task({
+        taskName: 'coding',
+        desiredMinutes: 80,
+        minimumMinutes: 60,
+        importance: 4,
+        executionContext: CONTEXTS.WORK,
+        splittable: false,
+        orderPreference: 'morning'
+      }),
+      task({
+        taskName: 'initramfs reading',
+        desiredMinutes: 60,
+        minimumMinutes: 40,
+        executionContext: CONTEXTS.ANY,
+        splittable: true,
+        minSegmentMinutes: 25,
+        orderPreference: 'morning',
+        energyDemand: 'high'
+      }),
+      task({
+        taskName: 'script reading',
+        desiredMinutes: 60,
+        minimumMinutes: 40,
+        executionContext: CONTEXTS.ANY,
+        splittable: true,
+        minSegmentMinutes: 30,
+        orderPreference: 'morning',
+        energyDemand: 'high'
+      }),
+      task({
+        taskName: 'incremental reading',
+        desiredMinutes: 80,
+        minimumMinutes: 50,
+        executionContext: CONTEXTS.ANY,
+        splittable: true,
+        minSegmentMinutes: 25,
+        orderPreference: 'morning',
+        energyDemand: 'high'
+      }),
+      task({
+        taskName: 'vocabulary',
+        desiredMinutes: 30,
+        minimumMinutes: 30,
+        executionContext: CONTEXTS.ANY,
+        splittable: true,
+        minSegmentMinutes: 10
+      })
+    ]
+  });
+
+  const minutesByTask = new Map();
+  for (const segment of scheduledSegments(result)) {
+    minutesByTask.set(
+      segment.taskName,
+      (minutesByTask.get(segment.taskName) ?? 0) + segment.allocatedMinutes
+    );
+  }
+
+  assert.notEqual(result.status, 'conflict');
+  assert.equal(minutesByTask.get('incremental reading'), 80);
+  assert.equal(minutesByTask.get('initramfs reading'), 60);
+  assert.equal(minutesByTask.get('script reading'), 60);
+  assert.equal(minutesByTask.get('vocabulary'), 30);
+  assert.ok(minutesByTask.get('driving') >= 15);
+  assert.ok(minutesByTask.get('driving') <= 30);
+  assertNoOverlaps(scheduledSegments(result));
+});
+
 test('compression waterfalls to higher-protected tasks when a donor hits its minimum', () => {
   const result = scheduleDay({
     planDate: PLAN_DATE,
