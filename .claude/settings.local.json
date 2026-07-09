@@ -3,7 +3,14 @@
     "allow": [
       "Bash(node repro.mjs)",
       "Bash(awk '{print $4, $5, $6, $8}')",
-      "Bash(awk '{print $4, $5}')"
+      "Bash(awk '{print $4, $5}')",
+      "Bash(node -e \"globalThis.__TRACE=true\" -e \"\")",
+      "Bash(__TRACE=1 node --eval \"globalThis.__TRACE=true; import\\('./repro2.mjs'\\);\")",
+      "Bash(node repro2.mjs)",
+      "Bash(git checkout *)",
+      "Bash(node --test tests/scheduler.test.js)",
+      "Bash(cp /tmp/find_repro.mjs ./find_repro.mjs)",
+      "Bash(node find_repro.mjs)"
     ]
   }
 }
