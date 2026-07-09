@@ -540,6 +540,71 @@ test('fixed task started before now schedules only remaining work without confli
   }]);
 });
 
+test('scheduleStart can keep a started fixed task anchored instead of clipping to now', () => {
+  const fixedTask = task({
+    taskName: 'anchored fixed task',
+    taskType: 'ç¼–ç å·¥ä½œ',
+    desiredMinutes: 60,
+    minimumMinutes: 60,
+    importance: 5,
+    fixed: true,
+    fixedStart: '09:00',
+    fixedEnd: '10:00'
+  });
+
+  const result = scheduleDay({
+    planDate: PLAN_DATE,
+    now: `${PLAN_DATE}T09:30:00`,
+    scheduleStart: `${PLAN_DATE}T00:00:00`,
+    availableBlocks: [block('09:00', '10:00', CONTEXTS.WORK)],
+    protectedBlocks: [],
+    tasks: [fixedTask]
+  });
+
+  assert.equal(result.status, 'ok');
+  assert.deepEqual(scheduledSegments(result), [{
+    taskId: fixedTask.taskId,
+    taskName: 'anchored fixed task',
+    status: TASK_STATUSES.SCHEDULED,
+    start: `${PLAN_DATE}T09:00:00`,
+    end: `${PLAN_DATE}T10:00:00`,
+    allocatedMinutes: 60
+  }]);
+});
+
+test('completed actual time is unavailable when scheduleStart preserves earlier blocks', () => {
+  const result = scheduleDay({
+    planDate: PLAN_DATE,
+    now: `${PLAN_DATE}T10:00:00`,
+    scheduleStart: `${PLAN_DATE}T00:00:00`,
+    availableBlocks: [block('09:00', '11:00', CONTEXTS.WORK)],
+    protectedBlocks: [],
+    tasks: [
+      task({
+        taskName: 'completed coding',
+        desiredMinutes: 30,
+        minimumMinutes: 30,
+        status: TASK_STATUSES.COMPLETED,
+        actualStart: `${PLAN_DATE}T09:00:00`,
+        actualEnd: `${PLAN_DATE}T09:30:00`
+      }),
+      task({
+        taskName: 'next coding',
+        desiredMinutes: 60,
+        minimumMinutes: 60,
+        executionContext: CONTEXTS.WORK
+      })
+    ]
+  });
+
+  const nextSegment = scheduledSegments(result).find((segment) => segment.taskName === 'next coding');
+
+  assert.equal(result.status, 'ok');
+  assert.equal(nextSegment.start, `${PLAN_DATE}T09:30:00`);
+  assert.equal(nextSegment.end, `${PLAN_DATE}T10:30:00`);
+  assertNoOverlaps(result.segments);
+});
+
 test('redistributes rounded allocation leftovers until available desired capacity is used', () => {
   const result = scheduleDay({
     planDate: PLAN_DATE,

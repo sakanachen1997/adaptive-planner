@@ -110,6 +110,7 @@ test('buildDebugReport serializes the full scheduling state as readable JSON', (
   const report = buildDebugReport({
     planDate: '2026-07-08',
     now: '2026-07-08T12:23:00',
+    scheduleStart: '2026-07-08T00:00:00',
     availableBlocks: [
       { start: '2026-07-08T09:00:00', end: '2026-07-08T18:00:00', context: 'work' }
     ],
@@ -143,6 +144,7 @@ test('buildDebugReport serializes the full scheduling state as readable JSON', (
   assert.equal(parsed.app, 'adaptive-planner');
   assert.equal(parsed.planDate, '2026-07-08');
   assert.equal(parsed.now, '2026-07-08T12:23:00');
+  assert.equal(parsed.scheduleStart, '2026-07-08T00:00:00');
   assert.equal(parsed.availableBlocks.length, 1);
   assert.equal(parsed.protectedBlocks[0].summary, '例会');
   assert.equal(parsed.tasks[0].taskName, '买菜');
@@ -435,6 +437,16 @@ test('timelineBounds spans visible schedule and protected blocks', () => {
     { startMinute: 570, endMinute: 630 },
     { startMinute: 1200, endMinute: 1260 }
   ]), { startMinute: 540, endMinute: 1320, totalMinutes: 780 });
+});
+
+test('timelineBounds can include the current time marker', () => {
+  assert.deepEqual(timelineBounds([
+    { startMinute: 600, endMinute: 660 }
+  ], '2026-07-08T08:30:00'), {
+    startMinute: 480,
+    endMinute: 720,
+    totalMinutes: 240
+  });
 });
 
 test('plan calendar events become tasks and retain their calendar event id', () => {

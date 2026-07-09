@@ -70,6 +70,10 @@ function localNowString() {
   return normalizeDateTime(new Date());
 }
 
+function scheduleStartForDate(planDate) {
+  return `${planDate}T00:00:00`;
+}
+
 function nextLocalDate(planDate) {
   const date = new Date(`${planDate}T00:00:00`);
   date.setDate(date.getDate() + 1);
@@ -603,18 +607,35 @@ export function buildTimelineItems({
   ));
 }
 
-export function timelineBounds(items) {
+export function timelineBounds(items, markerTime = null) {
+  const markerMinute = markerTime ? timelineMinutes(markerTime) : null;
+
   if (items.length === 0) {
-    return { startMinute: 480, endMinute: 1320, totalMinutes: 840 };
+    const defaultStart = 480;
+    const defaultEnd = 1320;
+    const startMinute = markerMinute === null
+      ? defaultStart
+      : Math.min(defaultStart, Math.floor(markerMinute / 60) * 60);
+    const endMinute = markerMinute === null
+      ? defaultEnd
+      : Math.max(defaultEnd, Math.ceil(markerMinute / 60) * 60);
+
+    return { startMinute, endMinute, totalMinutes: Math.max(60, endMinute - startMinute) };
   }
 
   const startMinute = Math.max(
     0,
-    Math.floor(Math.min(...items.map((item) => item.startMinute)) / 60) * 60
+    Math.floor(Math.min(
+      ...items.map((item) => item.startMinute),
+      markerMinute ?? Infinity
+    ) / 60) * 60
   );
   const endMinute = Math.min(
     1440,
-    Math.ceil(Math.max(...items.map((item) => item.endMinute)) / 60) * 60 + 60
+    Math.ceil(Math.max(
+      ...items.map((item) => item.endMinute),
+      markerMinute ?? -Infinity
+    ) / 60) * 60 + 60
   );
 
   return {
@@ -627,6 +648,7 @@ export function timelineBounds(items) {
 export function buildDebugReport({
   planDate,
   now,
+  scheduleStart = null,
   availableBlocks = [],
   protectedBlocks = [],
   tasks = [],
@@ -638,6 +660,7 @@ export function buildDebugReport({
       generatedFor: '调试导出：粘贴给助手以分析调度问题',
       planDate,
       now,
+      scheduleStart,
       availableBlocks,
       protectedBlocks,
       tasks,
@@ -1211,7 +1234,25 @@ function renderTimelineItem(parent, item, bounds) {
   parent.append(node);
 }
 
-function renderTimelineView(parent, items, bounds) {
+function renderCurrentTimeMarker(parent, now, bounds) {
+  if (!now) {
+    return;
+  }
+
+  const minute = timelineMinutes(now);
+
+  if (minute < bounds.startMinute || minute > bounds.endMinute) {
+    return;
+  }
+
+  const marker = document.createElement('div');
+  marker.className = 'timeline-now';
+  marker.style.top = `${((minute - bounds.startMinute) / bounds.totalMinutes) * 100}%`;
+  appendText(marker, `现在 ${now.slice(11, 16)}`, 'span');
+  parent.append(marker);
+}
+
+function renderTimelineView(parent, items, bounds, now = null) {
   parent.className = 'timeline-view';
   clear(parent);
 
@@ -1226,6 +1267,8 @@ function renderTimelineView(parent, items, bounds) {
   for (const item of items) {
     renderTimelineItem(parent, item, bounds);
   }
+
+  renderCurrentTimeMarker(parent, now, bounds);
 }
 
 function renderScheduleSummary(parent) {
@@ -1363,14 +1406,16 @@ function renderSchedule() {
     return;
   }
 
+  const now = localNowString();
   const items = buildTimelineItems({
     schedule: state.schedule,
     protectedBlocks,
     tasks: currentTasks,
-    now: localNowString()
+    now
   });
+  const timelineNow = now.slice(0, 10) === state.planDate ? now : null;
   const selectedItem = items.find((item) => item.id === state.selectedTimelineItemId) ?? null;
-  const bounds = timelineBounds(items);
+  const bounds = timelineBounds(items, timelineNow);
   const layout = document.createElement('div');
   const timelineView = document.createElement('div');
   const timelineDetail = document.createElement('div');
@@ -1378,7 +1423,7 @@ function renderSchedule() {
   layout.className = 'timeline-layout';
   timelineView.id = 'timelineView';
   timelineDetail.id = 'timelineDetail';
-  renderTimelineView(timelineView, items, bounds);
+  renderTimelineView(timelineView, items, bounds, timelineNow);
   renderTimelineDetail(timelineDetail, selectedItem);
   layout.append(timelineView, timelineDetail);
   root.append(layout);
@@ -1420,6 +1465,7 @@ function recalculate() {
   state.schedule = scheduleDay({
     planDate: state.planDate,
     now: localNowString(),
+    scheduleStart: scheduleStartForDate(state.planDate),
     availableBlocks: concreteAvailableBlocks(),
     protectedBlocks: protectedBlocksFromCalendar(),
     tasks: allTasks()
@@ -1783,9 +1829,12 @@ function fillDeadlineToday() {
 }
 
 function currentDebugReport() {
+  const scheduleStart = scheduleStartForDate(state.planDate);
+
   return buildDebugReport({
     planDate: state.planDate,
     now: localNowString(),
+    scheduleStart,
     availableBlocks: concreteAvailableBlocks(),
     protectedBlocks: protectedBlocksFromCalendar(),
     tasks: allTasks(),

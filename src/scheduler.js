@@ -689,17 +689,20 @@ function conflictResult(
 export function scheduleDay({
   planDate,
   now,
+  scheduleStart = now,
   availableBlocks = [],
   protectedBlocks = [],
   tasks = []
 }) {
   const completed = completedSegments(tasks);
+  const blockedIntervals = [...protectedBlocks, ...completed];
+  const schedulingNow = scheduleStart ?? now;
   const active = activeTasks(tasks)
     .map((task) => unlockAutoFixedDeadlineViolation(task, planDate))
-    .map((task) => taskWithEffectiveWork(task, planDate, now));
+    .map((task) => taskWithEffectiveWork(task, planDate, schedulingNow));
   const available = futurePartOfBlocks(
-    subtractIntervals(availableBlocks, protectedBlocks),
-    now
+    subtractIntervals(availableBlocks, blockedIntervals),
+    schedulingNow
   );
   const availableMinutes = totalMinutes(available);
   const requiredMinimumMinutes = active.reduce((sum, task) => (
@@ -724,7 +727,7 @@ export function scheduleDay({
   }
 
   const schedulableTasks = active.filter((task) => (
-    task.effectiveDesiredMinutes > 0 || fixedFutureInterval(task, planDate, now)
+    task.effectiveDesiredMinutes > 0 || fixedFutureInterval(task, planDate, schedulingNow)
   ));
   const orderedTasks = [...schedulableTasks].sort(placementComparator(now));
   const fixedTasks = orderedTasks.filter((task) => task.fixed && task.fixedStart && task.fixedEnd);
@@ -745,7 +748,7 @@ export function scheduleDay({
       allocations,
       available,
       planDate,
-      now
+      now: schedulingNow
     });
 
     if (!attempt.failure) {
