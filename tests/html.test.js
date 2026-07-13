@@ -50,6 +50,12 @@ test('deadline field exposes a today shortcut button', () => {
   assert.match(html, /id="deadlineTodayButton"[^>]*>今日<\/button>/);
 });
 
+test('dependency choices use a direct checkbox container instead of a native multi-select', () => {
+  assert.match(html, /id="dependencyTaskChoices"/);
+  assert.doesNotMatch(html, /select name="dependencyTaskIds"[^>]*multiple/);
+  assert.match(html, /直接勾选一个或多个任务/);
+});
+
 test('page exposes a persistent scheduling button instead of a compression action', () => {
   assert.match(html, /id="rescheduleButton"[^>]*>调度<\/button>/);
   assert.doesNotMatch(html, />一键按比例压缩<\/button>/);
@@ -72,6 +78,6 @@ test('calendar controls distinguish read-only import from calendar publishing', 
 });
 
 test('page cache-busts static assets after behavior changes', () => {
-  assert.match(html, /href="\.\/src\/styles\.css\?v=\d{8}-stable-now"/);
-  assert.match(html, /src="\.\/src\/main\.js\?v=\d{8}-stable-now"/);
+  assert.match(html, /href="\.\/src\/styles\.css\?v=\d{8}-stable-now(?:-\d+)?"/);
+  assert.match(html, /src="\.\/src\/main\.js\?v=\d{8}-stable-now(?:-\d+)?"/);
 });

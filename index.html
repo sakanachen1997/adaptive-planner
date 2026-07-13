@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Adaptive Planner</title>
-    <link rel="stylesheet" href="./src/styles.css?v=20260713-stable-now" />
+    <link rel="stylesheet" href="./src/styles.css?v=20260713-stable-now-2" />
     <script src="https://accounts.google.com/gsi/client" async defer></script>
   </head>
   <body>
@@ -81,11 +81,11 @@
             <span>顺序偏好</span>
             <select name="orderPreference"></select>
           </label>
-          <label class="field">
+          <div class="field">
             <span>前置任务（可多选）</span>
-            <select name="dependencyTaskIds" multiple size="4"></select>
-            <small class="muted">按 Ctrl/Cmd 可多选；这些任务的所有分段完成后，才会开始当前任务。</small>
-          </label>
+            <div id="dependencyTaskChoices" class="checkbox-list"></div>
+            <small class="muted">直接勾选一个或多个任务；这些任务的所有分段完成后，才会开始当前任务。</small>
+          </div>
           <label class="checkbox"><input name="splittable" type="checkbox" /> <span>是否可拆分</span></label>
           <label class="field">
             <span>最小分段时长</span>
@@ -123,6 +123,6 @@
       </section>
     </main>
 
-    <script type="module" src="./src/main.js?v=20260713-stable-now"></script>
+    <script type="module" src="./src/main.js?v=20260713-stable-now-2"></script>
   </body>
 </html>

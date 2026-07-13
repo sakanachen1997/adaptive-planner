@@ -39,7 +39,9 @@ function isValidDefaultBlock(block) {
     && typeof block.start === 'string'
     && typeof block.end === 'string'
     && typeof block.context === 'string'
-    && typeof block.enabled === 'boolean';
+    && typeof block.enabled === 'boolean'
+    && (block.customName == null || typeof block.customName === 'string')
+    && (block.customContextId == null || typeof block.customContextId === 'string');
 }
 
 function isValidSettings(settings) {

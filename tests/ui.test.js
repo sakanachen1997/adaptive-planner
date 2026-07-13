@@ -14,6 +14,9 @@ import {
   deadlineTodayValue,
   deadlineLabel,
   editableTasksForSchedule,
+  executionContextOptionsForBlocks,
+  contextKeyForBlock,
+  MAX_CUSTOM_BLOCKS,
   removeTaskForReschedule,
   uncompleteTaskInList,
   taskInputFromFormData,
@@ -26,6 +29,60 @@ import {
   timelineBounds,
   upsertLocalTask
 } from '../src/ui.js';
+
+test('named custom blocks become stable execution-context choices', () => {
+  const blocks = [
+    { context: 'work' },
+    { context: 'custom', customContextId: 'custom:a', customName: 'A' },
+    { context: 'custom', customContextId: 'custom:b', customName: 'B' }
+  ];
+  const options = executionContextOptionsForBlocks(blocks);
+
+  assert.equal(MAX_CUSTOM_BLOCKS, 8);
+  assert.deepEqual(options.map((item) => item.label), [
+    '任意时间',
+    '仅工作时间',
+    '仅下班后',
+    '自定义：A',
+    '自定义：B'
+  ]);
+  assert.equal(contextKeyForBlock(blocks[1]), 'custom:a');
+  blocks[1].customName = '重命名后的 A';
+  assert.equal(contextKeyForBlock(blocks[1]), 'custom:a');
+});
+
+test('dependency checkbox values are all read from form data', () => {
+  const values = new Map([
+    ['taskName', 'Write'],
+    ['taskType', '自定义'],
+    ['desiredMinutes', '60'],
+    ['minimumMinutes', '20'],
+    ['importance', '3'],
+    ['deadline', ''],
+    ['executionContext', 'custom:a'],
+    ['energyDemand', 'medium'],
+    ['physicalDemand', 'low'],
+    ['orderPreference', 'any'],
+    ['splittable', 'on'],
+    ['minSegmentMinutes', '20'],
+    ['externalCommitment', '1'],
+    ['fixed', null],
+    ['fixedStart', ''],
+    ['fixedEnd', '']
+  ]);
+  const data = {
+    get(name) {
+      return values.get(name);
+    },
+    getAll(name) {
+      return name === 'dependencyTaskIds' ? ['research', 'review'] : [];
+    }
+  };
+
+  const input = taskInputFromFormData(data);
+  assert.deepEqual(input.dependencyTaskIds, ['research', 'review']);
+  assert.equal(input.executionContext, 'custom:a');
+});
 
 test('ordinary calendar events become protected blocks with local wall-clock timestamps', () => {
   const event = {

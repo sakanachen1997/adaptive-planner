@@ -1585,3 +1585,27 @@ test('dependencies are enforced across work and home scheduling windows', () => 
       >= segments.find((segment) => segment.taskId === 'work-first').end
   );
 });
+
+test('named custom execution contexts only use their matching named block', () => {
+  const result = scheduleDay({
+    planDate: PLAN_DATE,
+    now: NOW,
+    availableBlocks: [
+      { ...block('09:00', '10:00'), context: 'custom:a' },
+      { ...block('15:00', '16:00'), context: 'custom:b' }
+    ],
+    protectedBlocks: [],
+    tasks: [
+      task({
+        taskId: 'only-b',
+        taskName: '只在 B 执行',
+        desiredMinutes: 60,
+        minimumMinutes: 60,
+        executionContext: 'custom:b'
+      })
+    ]
+  });
+
+  assert.equal(result.status, 'ok');
+  assert.equal(scheduledSegments(result)[0].start, `${PLAN_DATE}T15:00:00`);
+});

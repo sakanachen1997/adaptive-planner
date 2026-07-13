@@ -165,3 +165,22 @@ test('loadSettings clones custom blocks from valid stored JSON on each load', ()
   assert.notEqual(firstLoad.defaultBlocks[0], secondLoad.defaultBlocks[0]);
   assert.deepEqual(secondLoad.defaultBlocks, settings.defaultBlocks);
 });
+
+test('named custom block identity and label survive settings round trip', () => {
+  installFakeLocalStorage();
+  const settings = {
+    clientId: '',
+    writeBuffersToCalendar: false,
+    defaultBlocks: [{
+      start: '14:00',
+      end: '16:00',
+      context: 'custom',
+      enabled: true,
+      customName: 'A',
+      customContextId: 'custom:a'
+    }]
+  };
+
+  assert.equal(saveSettings(settings), true);
+  assert.deepEqual(loadSettings(), settings);
+});

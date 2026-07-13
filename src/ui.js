@@ -24,11 +24,10 @@ import {
   updatePlanEvent
 } from './calendarClient.js';
 
-const CONTEXT_OPTIONS = Object.freeze([
+const BASE_CONTEXT_OPTIONS = Object.freeze([
   { value: CONTEXTS.ANY, label: '任意时间' },
   { value: CONTEXTS.WORK, label: '仅工作时间' },
-  { value: CONTEXTS.HOME, label: '仅下班后' },
-  { value: CONTEXTS.CUSTOM, label: '自定义时间窗' }
+  { value: CONTEXTS.HOME, label: '仅下班后' }
 ]);
 
 const BLOCK_CONTEXT_OPTIONS = Object.freeze([
@@ -61,6 +60,8 @@ const ORDER_PREFERENCE_OPTIONS = Object.freeze([
 ]);
 
 const DEFAULT_MESSAGE = '先生成可用时间块并添加任务，然后点击调度。';
+export const MAX_CUSTOM_BLOCKS = 8;
+let customContextSequence = 0;
 
 function localDateString(date = new Date()) {
   return normalizeDateTime(date).slice(0, 10);
@@ -97,7 +98,10 @@ function blockFromSetting(block) {
     start: toTimeInputValue(block.start) || '09:00',
     end: toTimeInputValue(block.end) || '10:00',
     context: block.context || CONTEXTS.ANY,
-    enabled: block.enabled !== false
+    enabled: block.enabled !== false,
+    customName: String(block.customName ?? ''),
+    customContextId: block.customContextId
+      ?? (block.context === CONTEXTS.CUSTOM ? CONTEXTS.CUSTOM : null)
   };
 }
 
@@ -106,8 +110,58 @@ function blockToSetting(block) {
     start: block.start,
     end: block.end,
     context: block.context,
-    enabled: block.enabled !== false
+    enabled: block.enabled !== false,
+    customName: block.customName ?? '',
+    customContextId: block.customContextId ?? null
   };
+}
+
+function generateCustomContextId() {
+  customContextSequence += 1;
+  return globalThis.crypto?.randomUUID?.()
+    ? `custom:${globalThis.crypto.randomUUID()}`
+    : `custom:${Date.now()}:${customContextSequence}`;
+}
+
+export function contextKeyForBlock(block) {
+  if (block.context !== CONTEXTS.CUSTOM) {
+    return block.context;
+  }
+  return block.customContextId || CONTEXTS.CUSTOM;
+}
+
+function customBlocks(blocks = state.availableBlocks) {
+  return blocks.filter((block) => block.context === CONTEXTS.CUSTOM);
+}
+
+export function executionContextOptionsForBlocks(blocks, selectedValue = '') {
+  const namedOptions = customBlocks(blocks)
+    .map((block) => ({
+      value: contextKeyForBlock(block),
+      label: String(block.customName ?? '').trim()
+        ? `自定义：${String(block.customName).trim()}`
+        : '自定义时间块（未命名）'
+    }))
+    .filter((item, index, items) => (
+      items.findIndex((candidate) => candidate.value === item.value) === index
+    ));
+  const options = [...BASE_CONTEXT_OPTIONS, ...namedOptions];
+
+  if (selectedValue && !options.some((item) => item.value === selectedValue)) {
+    options.push({ value: selectedValue, label: `已不存在的时间块：${selectedValue}` });
+  }
+  return options;
+}
+
+function nextCustomBlockName(blocks = state.availableBlocks) {
+  const used = new Set(customBlocks(blocks).map((block) => block.customName));
+  for (let index = 1; index <= MAX_CUSTOM_BLOCKS; index += 1) {
+    const name = `自定义 ${index}`;
+    if (!used.has(name)) {
+      return name;
+    }
+  }
+  return `自定义 ${MAX_CUSTOM_BLOCKS}`;
 }
 
 function element(id) {
@@ -1146,7 +1200,7 @@ function concreteAvailableBlocks() {
     .map((block) => ({
       start: combineDateAndTime(state.planDate, block.start),
       end: combineDateAndTime(state.planDate, block.end),
-      context: block.context
+      context: contextKeyForBlock(block)
     }));
 }
 
@@ -1185,9 +1239,15 @@ function renderExecutionContextOptions() {
     return;
   }
 
+  const selectedValue = select.value;
+  const options = executionContextOptionsForBlocks(state.availableBlocks, selectedValue);
+
   select.replaceChildren(
-    ...CONTEXT_OPTIONS.map(({ value, label }) => option(value, label))
+    ...options.map(({ value, label }) => option(value, label))
   );
+  if (selectedValue) {
+    select.value = selectedValue;
+  }
 }
 
 function renderSelectOptions(name, options) {
@@ -1209,8 +1269,8 @@ function renderTaskPresetFieldOptions() {
 }
 
 function renderDependencyOptions(selectedTaskIds = []) {
-  const select = firstElement('select[name="dependencyTaskIds"]');
-  if (!select) {
+  const root = element('dependencyTaskChoices');
+  if (!root) {
     return;
   }
 
@@ -1218,20 +1278,32 @@ function renderDependencyOptions(selectedTaskIds = []) {
   const editingTaskId = state.editingTaskKey?.startsWith('task:')
     ? state.editingTaskKey.slice('task:'.length)
     : null;
-  const options = logicalTaskDefinitions()
+  const tasks = logicalTaskDefinitions()
     .filter((task) => task.status !== TASK_STATUSES.SKIPPED)
     .filter((task) => task.taskId !== editingTaskId)
-    .sort((left, right) => left.taskName.localeCompare(right.taskName))
-    .map((task) => {
-      const label = task.status === TASK_STATUSES.COMPLETED
-        ? `${task.taskName}（已完成）`
-        : task.taskName;
-      const node = option(task.taskId, label);
-      node.selected = selected.has(task.taskId);
-      return node;
-    });
+    .sort((left, right) => left.taskName.localeCompare(right.taskName));
 
-  select.replaceChildren(...options);
+  clear(root);
+  if (tasks.length === 0) {
+    appendText(root, '还没有可作为前置条件的其他任务。', 'span').className = 'muted';
+    return;
+  }
+
+  for (const task of tasks) {
+    const label = task.status === TASK_STATUSES.COMPLETED
+      ? `${task.taskName}（已完成）`
+      : task.taskName;
+    const wrapper = document.createElement('label');
+    const checkbox = document.createElement('input');
+    wrapper.className = 'checkbox-option';
+    checkbox.type = 'checkbox';
+    checkbox.name = 'dependencyTaskIds';
+    checkbox.value = task.taskId;
+    checkbox.checked = selected.has(task.taskId);
+    wrapper.append(checkbox);
+    appendText(wrapper, label, 'span');
+    root.append(wrapper);
+  }
 }
 
 function applyTaskTypePreset(taskType) {
@@ -1272,6 +1344,12 @@ function renderAvailableBlocks() {
     return;
   }
 
+  appendText(
+    root,
+    `自定义时间块 ${customBlocks().length}/${MAX_CUSTOM_BLOCKS}；选择“自定义”后可命名。`,
+    'p'
+  ).className = 'muted';
+
   state.availableBlocks.forEach((block, index) => {
     const row = document.createElement('div');
     row.className = 'row';
@@ -1296,12 +1374,26 @@ function renderAvailableBlocks() {
     context.setAttribute('aria-label', '时间块场景');
     renderContextSelect(context, block.context);
 
+    const customName = document.createElement('input');
+    customName.type = 'text';
+    customName.value = block.customName ?? '';
+    customName.placeholder = '名称，例如 A';
+    customName.maxLength = 40;
+    customName.className = 'custom-block-name';
+    customName.dataset.blockIndex = String(index);
+    customName.dataset.blockField = 'customName';
+    customName.setAttribute('aria-label', '自定义时间块名称');
+
     const remove = document.createElement('button');
     remove.type = 'button';
     remove.textContent = '删除';
     remove.dataset.removeBlockIndex = String(index);
 
-    row.append(start, end, context, remove);
+    row.append(start, end, context);
+    if (block.context === CONTEXTS.CUSTOM) {
+      row.append(customName);
+    }
+    row.append(remove);
     root.append(row);
   });
 }
@@ -1703,6 +1795,7 @@ function fillDefaultBlocks() {
     .filter((block) => block.enabled)
     .map(blockFromSetting);
   renderAvailableBlocks();
+  renderExecutionContextOptions();
   recalculate();
 }
 
@@ -2025,8 +2118,27 @@ function handleAvailableBlockInput(event) {
     return;
   }
 
-  state.availableBlocks[index][field] = event.target.value;
+  const block = state.availableBlocks[index];
+  const value = event.target.value;
+
+  if (field === 'context' && value === CONTEXTS.CUSTOM && block.context !== CONTEXTS.CUSTOM) {
+    if (customBlocks().length >= MAX_CUSTOM_BLOCKS) {
+      showMessage(`最多只能创建 ${MAX_CUSTOM_BLOCKS} 个自定义时间块。`, true);
+      renderAvailableBlocks();
+      return;
+    }
+    block.customContextId = block.customContextId || generateCustomContextId();
+    block.customName = block.customName || nextCustomBlockName();
+  }
+
+  block[field] = value;
   saveCurrentBlocksAsDefaults();
+  if (field === 'context') {
+    renderAvailableBlocks();
+  }
+  if (field === 'context' || field === 'customName') {
+    renderExecutionContextOptions();
+  }
   recalculate();
 }
 
@@ -2040,6 +2152,7 @@ function handleAvailableBlockClick(event) {
   state.availableBlocks.splice(index, 1);
   saveCurrentBlocksAsDefaults();
   renderAvailableBlocks();
+  renderExecutionContextOptions();
   recalculate();
 }
 
@@ -2048,7 +2161,9 @@ function addAvailableBlock() {
     start: '09:00',
     end: '10:00',
     context: CONTEXTS.ANY,
-    enabled: true
+    enabled: true,
+    customName: '',
+    customContextId: null
   });
   saveCurrentBlocksAsDefaults();
   renderAvailableBlocks();
