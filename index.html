@@ -30,6 +30,10 @@
           <button id="rescheduleButton" type="button">调度</button>
           <button id="copyDebugButton" type="button">复制调试信息</button>
         </div>
+        <label class="checkbox">
+          <input id="scheduleFromNowToggle" type="checkbox" />
+          <span>从当前时间调度（完成后把未完成任务重排到现在之后）</span>
+        </label>
         <p class="muted">只读取 Google Calendar，不会写入、覆盖或删除日历事件。普通日历事件只作为受保护的不可用时间显示。</p>
         <div id="availableBlocks"></div>
         <button id="addBlockButton" type="button">添加可用时间块</button>

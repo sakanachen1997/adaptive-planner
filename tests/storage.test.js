@@ -105,6 +105,7 @@ test('saveSettings stores JSON that loadSettings can read back', () => {
   const settings = {
     clientId: 'client-123',
     writeBuffersToCalendar: true,
+    scheduleFromNow: false,
     defaultBlocks: [
       { start: '08:30', end: '12:00', context: 'work', enabled: true },
       { start: '20:00', end: '22:00', context: 'home', enabled: false }
@@ -166,11 +167,33 @@ test('loadSettings clones custom blocks from valid stored JSON on each load', ()
   assert.deepEqual(secondLoad.defaultBlocks, settings.defaultBlocks);
 });
 
+test('scheduleFromNow round-trips and defaults to false for legacy settings', () => {
+  installFakeLocalStorage();
+
+  const withFlag = {
+    clientId: '',
+    writeBuffersToCalendar: false,
+    scheduleFromNow: true,
+    defaultBlocks: [{ start: '09:00', end: '10:00', context: 'work', enabled: true }]
+  };
+  assert.equal(saveSettings(withFlag), true);
+  assert.equal(loadSettings().scheduleFromNow, true);
+
+  // Legacy settings saved before the field existed load as false.
+  globalThis.localStorage.setItem(SETTINGS_KEY, JSON.stringify({
+    clientId: '',
+    writeBuffersToCalendar: false,
+    defaultBlocks: [{ start: '09:00', end: '10:00', context: 'work', enabled: true }]
+  }));
+  assert.equal(loadSettings().scheduleFromNow, false);
+});
+
 test('named custom block identity and label survive settings round trip', () => {
   installFakeLocalStorage();
   const settings = {
     clientId: '',
     writeBuffersToCalendar: false,
+    scheduleFromNow: false,
     defaultBlocks: [{
       start: '14:00',
       end: '16:00',

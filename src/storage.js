@@ -8,6 +8,7 @@ const DEFAULT_BLOCKS = Object.freeze([
 export const DEFAULT_SETTINGS = Object.freeze({
   clientId: '',
   writeBuffersToCalendar: false,
+  scheduleFromNow: false,
   defaultBlocks: DEFAULT_BLOCKS
 });
 
@@ -48,6 +49,7 @@ function isValidSettings(settings) {
   return isPlainObject(settings)
     && typeof settings.clientId === 'string'
     && typeof settings.writeBuffersToCalendar === 'boolean'
+    && (settings.scheduleFromNow == null || typeof settings.scheduleFromNow === 'boolean')
     && Array.isArray(settings.defaultBlocks)
     && settings.defaultBlocks.every(isValidDefaultBlock);
 }
@@ -78,6 +80,7 @@ export function loadSettings() {
     return {
       clientId: parsed.clientId,
       writeBuffersToCalendar: parsed.writeBuffersToCalendar,
+      scheduleFromNow: parsed.scheduleFromNow === true,
       defaultBlocks: cloneBlocks(parsed.defaultBlocks)
     };
   } catch {

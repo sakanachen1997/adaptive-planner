@@ -19,6 +19,7 @@ import {
   contextKeyForBlock,
   MAX_CUSTOM_BLOCKS,
   removeTaskForReschedule,
+  resolveScheduleStart,
   uncompleteTaskInList,
   taskInputFromFormData,
   formInputForTask,
@@ -776,6 +777,50 @@ test('calendar readback Plan task can be rendered as timeline task item', () => 
   assert.equal(items[0].kind, 'task');
   assert.equal(items[0].task.calendarEventId, 'event-plan');
   assert.equal(items[0].editable, true);
+});
+
+test('resolveScheduleStart anchors to now only when scheduling from now on the current day', () => {
+  assert.equal(
+    resolveScheduleStart({ scheduleFromNow: true, planDate: '2026-07-13', now: '2026-07-13T11:15:48' }),
+    '2026-07-13T11:15:48'
+  );
+  assert.equal(
+    resolveScheduleStart({ scheduleFromNow: true, planDate: '2026-07-14', now: '2026-07-13T11:15:48' }),
+    '2026-07-14T00:00:00'
+  );
+  assert.equal(
+    resolveScheduleStart({ scheduleFromNow: false, planDate: '2026-07-13', now: '2026-07-13T11:15:48' }),
+    '2026-07-13T00:00:00'
+  );
+});
+
+test('buildTimelineItems suppresses missed items when scheduling from now', () => {
+  const task = calendarEventToPlanTask({
+    id: 'event-past',
+    summary: '[Plan] Past task',
+    description: buildDescription('Created by planner', {
+      schemaVersion: 1,
+      app: APP_ID,
+      taskId: 'task-past',
+      taskName: 'Past task',
+      taskType: 'custom',
+      desiredMinutes: 60,
+      minimumMinutes: 30,
+      importance: 3,
+      status: TASK_STATUSES.SCHEDULED
+    }),
+    start: { dateTime: '2026-07-08T09:00:00+02:00' },
+    end: { dateTime: '2026-07-08T10:00:00+02:00' }
+  });
+  const items = buildTimelineItems({
+    schedule: { status: 'ok', planDate: '2026-07-08', segments: [] },
+    protectedBlocks: [],
+    tasks: [task],
+    now: '2026-07-08T12:00:00',
+    suppressMissed: true
+  });
+
+  assert.deepEqual(items, []);
 });
 
 test('past unfinished calendar Plan task remains visible as missed timeline item', () => {

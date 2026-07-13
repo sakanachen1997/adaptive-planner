@@ -75,6 +75,26 @@ function scheduleStartForDate(planDate) {
   return `${planDate}T00:00:00`;
 }
 
+export function resolveScheduleStart({ scheduleFromNow, planDate, now }) {
+  if (scheduleFromNow && normalizeDateTime(now).slice(0, 10) === planDate) {
+    return normalizeDateTime(now);
+  }
+  return scheduleStartForDate(planDate);
+}
+
+function scheduleFromNowActive() {
+  return Boolean(state.settings.scheduleFromNow)
+    && localDateString() === state.planDate;
+}
+
+function currentScheduleStart() {
+  return resolveScheduleStart({
+    scheduleFromNow: Boolean(state.settings.scheduleFromNow),
+    planDate: state.planDate,
+    now: localNowString()
+  });
+}
+
 function nextLocalDate(planDate) {
   const date = new Date(`${planDate}T00:00:00`);
   date.setDate(date.getDate() + 1);
@@ -670,7 +690,8 @@ export function buildTimelineItems({
   schedule = null,
   protectedBlocks = [],
   tasks = [],
-  now = null
+  now = null,
+  suppressMissed = false
 }) {
   const candidatesByTaskId = taskCandidatesByTaskId(tasks);
   const scheduleSegments = schedule?.segments ?? [];
@@ -700,13 +721,15 @@ export function buildTimelineItems({
       segmentCount
     };
   });
-  const missedItems = missedTimelineItems({
-    tasks,
-    existingSegments: scheduleSegments,
-    planDate: schedule?.planDate ?? null,
-    now,
-    candidatesByTaskId
-  });
+  const missedItems = suppressMissed
+    ? []
+    : missedTimelineItems({
+      tasks,
+      existingSegments: scheduleSegments,
+      planDate: schedule?.planDate ?? null,
+      now,
+      candidatesByTaskId
+    });
   const protectedItems = protectedBlocks.map((block) => ({
     kind: 'protected',
     id: `protected:${block.calendarEventId ?? block.start}`,
@@ -1736,7 +1759,8 @@ function renderSchedule() {
     schedule: state.schedule,
     protectedBlocks,
     tasks: currentTasks,
-    now
+    now,
+    suppressMissed: scheduleFromNowActive()
   });
   const timelineNow = now.slice(0, 10) === state.planDate ? now : null;
   const selectedItem = items.find((item) => item.id === state.selectedTimelineItemId) ?? null;
@@ -1793,7 +1817,7 @@ function recalculate() {
   state.schedule = scheduleDay({
     planDate: state.planDate,
     now: localNowString(),
-    scheduleStart: scheduleStartForDate(state.planDate),
+    scheduleStart: currentScheduleStart(),
     availableBlocks: concreteAvailableBlocks(),
     protectedBlocks: protectedBlocksFromCalendar(),
     tasks: logicalTasksForSchedule(taskRecords)
@@ -2194,7 +2218,7 @@ function fillDeadlineToday() {
 }
 
 function currentDebugReport() {
-  const scheduleStart = scheduleStartForDate(state.planDate);
+  const scheduleStart = currentScheduleStart();
 
   return buildDebugReport({
     planDate: state.planDate,
@@ -2341,6 +2365,11 @@ function wireEvents() {
     applyTaskTypePreset(event.target.value);
   });
   element('cancelEditTaskButton')?.addEventListener('click', resetTaskForm);
+  element('scheduleFromNowToggle')?.addEventListener('change', (event) => {
+    state.settings.scheduleFromNow = event.target.checked;
+    saveSettings(state.settings);
+    recalculate();
+  });
   element('scheduleList')?.addEventListener('click', handleScheduleClick);
   element('planDateInput')?.addEventListener('change', (event) => {
     state = resetCalendarStateForDateChange(
@@ -2362,6 +2391,11 @@ function populateInitialValues() {
 
   if (planDateInput) {
     planDateInput.value = state.planDate;
+  }
+
+  const scheduleFromNowToggle = element('scheduleFromNowToggle');
+  if (scheduleFromNowToggle) {
+    scheduleFromNowToggle.checked = Boolean(state.settings.scheduleFromNow);
   }
 }
 
