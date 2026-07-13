@@ -1194,6 +1194,13 @@ function logicalTaskDefinitions(tasks = allTasks()) {
   return [...definitions.values()];
 }
 
+export function dependencyCandidatesForTasks(tasks, editingTaskId = null) {
+  return logicalTaskDefinitions(tasks)
+    .filter((task) => task.status !== TASK_STATUSES.SKIPPED)
+    .filter((task) => task.taskId !== editingTaskId)
+    .sort((left, right) => left.taskName.localeCompare(right.taskName));
+}
+
 function concreteAvailableBlocks() {
   return state.availableBlocks
     .filter((block) => block.enabled !== false)
@@ -1278,10 +1285,7 @@ function renderDependencyOptions(selectedTaskIds = []) {
   const editingTaskId = state.editingTaskKey?.startsWith('task:')
     ? state.editingTaskKey.slice('task:'.length)
     : null;
-  const tasks = logicalTaskDefinitions()
-    .filter((task) => task.status !== TASK_STATUSES.SKIPPED)
-    .filter((task) => task.taskId !== editingTaskId)
-    .sort((left, right) => left.taskName.localeCompare(right.taskName));
+  const tasks = dependencyCandidatesForTasks(allTasks(), editingTaskId);
 
   clear(root);
   if (tasks.length === 0) {
@@ -1304,6 +1308,12 @@ function renderDependencyOptions(selectedTaskIds = []) {
     appendText(wrapper, label, 'span');
     root.append(wrapper);
   }
+}
+
+function selectedDependencyTaskIdsFromForm() {
+  return [...document.querySelectorAll(
+    '#dependencyTaskChoices input[name="dependencyTaskIds"]:checked'
+  )].map((checkbox) => checkbox.value);
 }
 
 function applyTaskTypePreset(taskType) {
@@ -1778,6 +1788,7 @@ function renderSyncPreview() {
 }
 
 function recalculate() {
+  const selectedDependencyTaskIds = selectedDependencyTaskIdsFromForm();
   const taskRecords = allTasks();
   state.schedule = scheduleDay({
     planDate: state.planDate,
@@ -1788,6 +1799,7 @@ function recalculate() {
     tasks: logicalTasksForSchedule(taskRecords)
   });
   renderSchedule();
+  renderDependencyOptions(selectedDependencyTaskIds);
 }
 
 function fillDefaultBlocks() {

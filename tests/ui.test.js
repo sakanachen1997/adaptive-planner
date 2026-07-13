@@ -14,6 +14,7 @@ import {
   deadlineTodayValue,
   deadlineLabel,
   editableTasksForSchedule,
+  dependencyCandidatesForTasks,
   executionContextOptionsForBlocks,
   contextKeyForBlock,
   MAX_CUSTOM_BLOCKS,
@@ -82,6 +83,23 @@ test('dependency checkbox values are all read from form data', () => {
   const input = taskInputFromFormData(data);
   assert.deepEqual(input.dependencyTaskIds, ['research', 'review']);
   assert.equal(input.executionContext, 'custom:a');
+});
+
+test('scheduled Calendar tasks qualify as dependency candidates after readback', () => {
+  const tasks = [
+    { taskId: 'calendar-a', taskName: 'Calendar A', status: TASK_STATUSES.SCHEDULED, calendarEventId: 'event-a' },
+    { taskId: 'calendar-b', taskName: 'Calendar B', status: TASK_STATUSES.SCHEDULED, calendarEventId: 'event-b' },
+    { taskId: 'skipped', taskName: 'Skipped', status: TASK_STATUSES.SKIPPED, calendarEventId: 'event-c' }
+  ];
+
+  assert.deepEqual(
+    dependencyCandidatesForTasks(tasks).map((task) => task.taskId),
+    ['calendar-a', 'calendar-b']
+  );
+  assert.deepEqual(
+    dependencyCandidatesForTasks(tasks, 'calendar-b').map((task) => task.taskId),
+    ['calendar-a']
+  );
 });
 
 test('ordinary calendar events become protected blocks with local wall-clock timestamps', () => {
