@@ -873,6 +873,91 @@ function dependencyOrderIssues(tasks, segments) {
 
 const FLOATING_ENUMERATION_LIMIT = 8;
 
+function placedMinutesByTask(segments) {
+  const map = new Map();
+  for (const segment of segments) {
+    map.set(segment.taskId, (map.get(segment.taskId) ?? 0) + segment.allocatedMinutes);
+  }
+  return map;
+}
+
+function totalPlacedMinutes(actuals) {
+  return [...actuals.values()].reduce((sum, minutes) => sum + minutes, 0);
+}
+
+// After a window's baseline schedule converges without conflict, grow
+// under-desired tasks (highest priority first) into any wasted gaps by
+// re-placing the window. Only waste-reducing, conflict-free results are kept.
+function reclaimWastedCapacity({
+  fixedTasks,
+  flexibleTasks,
+  tasks,
+  blocks,
+  planDate,
+  now,
+  dependencyEnds,
+  scheduled,
+  unscheduled
+}) {
+  let bestScheduled = scheduled;
+  let bestUnscheduled = unscheduled;
+  let bestActual = placedMinutesByTask(bestScheduled);
+  let bestTotal = totalPlacedMinutes(bestActual);
+  const byPriority = priorityDescending(now);
+
+  while (true) {
+    const candidates = tasks
+      .filter((task) => !isUserFixed(task))
+      .filter((task) => (bestActual.get(task.taskId) ?? 0) < task.effectiveDesiredMinutes)
+      .sort(byPriority);
+    let progressed = false;
+
+    for (const task of candidates) {
+      const current = bestActual.get(task.taskId) ?? 0;
+
+      for (let target = task.effectiveDesiredMinutes; target > current; target -= 1) {
+        const allocations = new Map(bestActual);
+        allocations.set(task.taskId, target);
+        const trial = attemptPlacement({
+          fixedTasks,
+          flexibleTasks,
+          allocations,
+          available: blocks,
+          planDate,
+          now,
+          initialDependencyEnds: dependencyEnds
+        });
+
+        if (trial.failure) {
+          continue;
+        }
+
+        const trialActual = placedMinutesByTask(trial.scheduled);
+        const trialTotal = totalPlacedMinutes(trialActual);
+
+        if (trialTotal > bestTotal) {
+          bestScheduled = trial.scheduled;
+          bestUnscheduled = trial.unscheduled;
+          bestActual = trialActual;
+          bestTotal = trialTotal;
+          progressed = true;
+          break;
+        }
+      }
+
+      if (progressed) {
+        break;
+      }
+    }
+
+    if (!progressed) {
+      break;
+    }
+  }
+
+  return { scheduled: bestScheduled, unscheduled: bestUnscheduled };
+}
+
 function scheduleWindow({ tasks, blocks, planDate, now, dependencyEnds = new Map() }) {
   const capacity = totalMinutes(blocks);
   const ordered = orderByDependencies(tasks, placementComparator(now));
@@ -924,19 +1009,32 @@ function scheduleWindow({ tasks, blocks, planDate, now, dependencyEnds = new Map
     }
   }
 
-  const placedByTask = new Map();
-  for (const segment of attempt.scheduled) {
-    placedByTask.set(segment.taskId, (placedByTask.get(segment.taskId) ?? 0) + segment.allocatedMinutes);
-  }
+  const reclaimed = reclaimWastedCapacity({
+    fixedTasks,
+    flexibleTasks,
+    tasks,
+    blocks,
+    planDate,
+    now,
+    dependencyEnds,
+    scheduled: attempt.scheduled,
+    unscheduled: attempt.unscheduled
+  });
+
+  const placedByTask = placedMinutesByTask(reclaimed.scheduled);
   const compression = tasks.reduce((sum, task) => (
     sum + Math.max(0, task.effectiveDesiredMinutes - (placedByTask.get(task.taskId) ?? 0))
   ), 0);
+  const finalAllocations = new Map(allocations);
+  for (const [taskId, minutes] of placedByTask) {
+    finalAllocations.set(taskId, minutes);
+  }
 
   return {
-    scheduled: attempt.scheduled,
-    unscheduled: attempt.unscheduled,
+    scheduled: reclaimed.scheduled,
+    unscheduled: reclaimed.unscheduled,
     failure: null,
-    allocations,
+    allocations: finalAllocations,
     compression,
     dependencyEnds: attempt.dependencyEnds
   };

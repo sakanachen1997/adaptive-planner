@@ -1427,6 +1427,37 @@ test('per-context windows: work-time task extension does not starve evening (eve
   }
 });
 
+test('repack reclaims wasted gaps and grows the highest-priority under-desired task', () => {
+  const result = scheduleDay({
+    planDate: PLAN_DATE,
+    now: `${PLAN_DATE}T08:00:00`,
+    availableBlocks: [block('17:10', '23:20', CONTEXTS.HOME)],
+    protectedBlocks: [],
+    tasks: [
+      task({ taskName: '吃饭', taskType: '生活杂务', desiredMinutes: 70, minimumMinutes: 70, importance: 1, executionContext: CONTEXTS.HOME, deadline: `${PLAN_DATE}T19:30:00`, splittable: true, minSegmentMinutes: 15 }),
+      task({ taskName: '莉莉安娜', taskType: '绘画委托副业', desiredMinutes: 80, minimumMinutes: 40, importance: 5, executionContext: CONTEXTS.HOME, splittable: false, minSegmentMinutes: 30 }),
+      task({ taskName: 'supermemo', taskType: '复杂教程和学习', desiredMinutes: 15, minimumMinutes: 5, importance: 3, executionContext: CONTEXTS.HOME, splittable: true, minSegmentMinutes: 25 }),
+      task({ taskName: '开车', taskType: '打游戏', desiredMinutes: 30, minimumMinutes: 15, importance: 2, executionContext: CONTEXTS.HOME, splittable: true, minSegmentMinutes: 30 }),
+      task({ taskName: '芭蕾', taskType: '编码工作', desiredMinutes: 180, minimumMinutes: 180, importance: 3, executionContext: CONTEXTS.WORK, fixed: true, fixedStart: '19:30', fixedEnd: '22:30', splittable: false, minSegmentMinutes: 45 }),
+      task({ taskName: '卷子两套', taskType: '复杂教程和学习', desiredMinutes: 40, minimumMinutes: 40, importance: 3, executionContext: CONTEXTS.HOME, splittable: true, minSegmentMinutes: 20 }),
+      task({ taskName: '清理卫生间', taskType: '生活杂务', desiredMinutes: 15, minimumMinutes: 7, importance: 3, executionContext: CONTEXTS.HOME, splittable: true, minSegmentMinutes: 15 })
+    ]
+  });
+
+  const mins = new Map();
+  for (const segment of scheduledSegments(result)) {
+    mins.set(segment.taskName, (mins.get(segment.taskName) ?? 0) + segment.allocatedMinutes);
+  }
+  const preBallet = scheduledSegments(result).filter((segment) => segment.end <= `${PLAN_DATE}T19:30:00`);
+  const usedBeforeBallet = preBallet.reduce((sum, segment) => sum + segment.allocatedMinutes, 0);
+
+  assert.notEqual(result.status, 'conflict');
+  assert.ok(mins.get('莉莉安娜') >= 49, `莉莉安娜 got ${mins.get('莉莉安娜')}`);
+  assert.ok(mins.get('开车') >= 15, `开车 got ${mins.get('开车')}`);
+  assert.equal(usedBeforeBallet, 140);
+  assertNoOverlaps(scheduledSegments(result));
+});
+
 test('home-only tasks are not placed in work blocks', () => {
   const result = scheduleDay({
     planDate: PLAN_DATE,
