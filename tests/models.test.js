@@ -201,3 +201,21 @@ test('createTask accepts an explicit order preference override', () => {
 
   assert.equal(task.orderPreference, 'morning');
 });
+
+test('createTask normalizes dependency task ids and rejects self dependencies', () => {
+  const task = createTask({
+    taskId: 'write',
+    taskName: '写作',
+    taskType: '自定义',
+    desiredMinutes: 60,
+    minimumMinutes: 20,
+    importance: 3,
+    dependencyTaskIds: ['research', 'research', '  review  ', '']
+  });
+
+  assert.deepEqual(task.dependencyTaskIds, ['research', 'review']);
+  assert.throws(() => createTask({
+    ...task,
+    dependencyTaskIds: ['write']
+  }), /cannot depend on itself/);
+});

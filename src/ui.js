@@ -13,7 +13,7 @@ import {
 } from './metadata.js';
 import { scheduleDay } from './scheduler.js';
 import { calculatePriority } from './priority.js';
-import { combineDateAndTime, normalizeDateTime } from './time.js';
+import { combineDateAndTime, minutesBetween, normalizeDateTime } from './time.js';
 import { loadSettings, saveSettings } from './storage.js';
 import {
   createPlanEvent,
@@ -205,6 +205,7 @@ function metadataForSegment(segment, task, planDate, segmentId, status = TASK_ST
     plannedEnd,
     calendarEventId,
     localOverride,
+    taskLevelOverride,
     ...taskMetadata
   } = task ?? {};
 
@@ -221,13 +222,17 @@ function metadataForSegment(segment, task, planDate, segmentId, status = TASK_ST
 }
 
 function indexesForScheduledSegments(segments) {
-  const seenByTask = new Map();
   const indexes = new Map();
+  const byTaskId = new Map();
 
   for (const segment of segments) {
-    const index = seenByTask.get(segment.taskId) ?? 0;
-    seenByTask.set(segment.taskId, index + 1);
-    indexes.set(segment, index);
+    byTaskId.set(segment.taskId, [...(byTaskId.get(segment.taskId) ?? []), segment]);
+  }
+
+  for (const taskSegments of byTaskId.values()) {
+    taskSegments
+      .sort((left, right) => left.start.localeCompare(right.start) || left.end.localeCompare(right.end))
+      .forEach((segment, index) => indexes.set(segment, index));
   }
 
   return indexes;
@@ -329,6 +334,10 @@ function taskEditKey(task) {
   return `task:${task.taskId}`;
 }
 
+function logicalTaskEditKey(task) {
+  return `task:${task.taskId}`;
+}
+
 function sameEditableTask(left, right) {
   if (left.calendarEventId && right.calendarEventId) {
     return left.calendarEventId === right.calendarEventId;
@@ -402,7 +411,8 @@ export function formInputForTask(task) {
     externalCommitment: String(task.externalCommitment ?? defaults.externalCommitment),
     fixed: Boolean(task.fixed) && !task.autoFixed,
     fixedStart: toTimeInputValue(task.fixedStart),
-    fixedEnd: toTimeInputValue(task.fixedEnd)
+    fixedEnd: toTimeInputValue(task.fixedEnd),
+    dependencyTaskIds: [...(task.dependencyTaskIds ?? [])]
   };
 }
 
@@ -418,6 +428,24 @@ export function upsertLocalTask(tasks, editedTask) {
     editedTask,
     ...tasks.slice(index + 1)
   ];
+}
+
+function taskConfigurationFromOverride(task) {
+  const {
+    taskId,
+    status,
+    segmentId,
+    calendarEventId,
+    plannedStart,
+    plannedEnd,
+    actualStart,
+    actualEnd,
+    autoFixed,
+    localOverride,
+    taskLevelOverride,
+    ...configuration
+  } = task;
+  return configuration;
 }
 
 export function shouldShowRecoveryActions(schedule) {
@@ -437,6 +465,23 @@ function formatCandidateBlocks(blocks = []) {
 }
 
 export function conflictSummaryLines(conflict) {
+  if (conflict.kind === 'missing_dependency') {
+    return (conflict.dependencyIssues ?? []).map((item) => (
+      `任务「${item.taskName}」引用的前置任务 ${item.dependencyTaskId} 已不存在。请编辑任务并重新选择前置任务。`
+    ));
+  }
+
+  if (conflict.kind === 'dependency_cycle') {
+    const names = (conflict.dependencyIssues ?? []).map((item) => `「${item.taskName}」`).join('、');
+    return [`任务依赖形成了环：${names}。环中的任务都无法成为第一个，请移除至少一条依赖。`];
+  }
+
+  if (conflict.kind === 'dependency_order_violation') {
+    return (conflict.dependencyIssues ?? []).map((item) => (
+      `任务「${item.taskName}」在前置任务完成前就开始了。请调整固定时间、执行场景或可用时间。`
+    ));
+  }
+
   if (conflict.kind === 'deadline_violation' && conflict.deadlineViolations?.length) {
     return conflict.deadlineViolations.map((item) => (
       `任务「${item.taskName}」固定在 ${item.fixedStart} - ${item.fixedEnd}，但截止时间是 ${item.deadline.slice(11, 16)}。请修改固定时间、截止时间，或删除该任务。`
@@ -575,21 +620,30 @@ export function buildTimelineItems({
 }) {
   const candidatesByTaskId = taskCandidatesByTaskId(tasks);
   const scheduleSegments = schedule?.segments ?? [];
+  const segmentCounts = countsForSegmentsByTask(scheduleSegments);
+  const segmentIndexes = indexesForScheduledSegments(scheduleSegments);
   const taskItems = scheduleSegments.map((segment) => {
-    const task = findTaskForSegment(segment, candidatesByTaskId);
+    const task = findTaskForSegment(segment, candidatesByTaskId, {
+      allowLogicalTaskFallback: true
+    });
+    const segmentCount = segmentCounts.get(segment.taskId) ?? 1;
+    const segmentNumber = (segmentIndexes.get(segment) ?? 0) + 1;
+    const segmentLabel = segmentCount > 1 ? ` · ${segmentNumber}/${segmentCount}` : '';
 
     return {
       kind: 'task',
       id: segment.segmentId ?? `${segment.taskId}:${segment.start}:${segment.end}`,
       task,
       segment,
-      title: segment.taskName,
+      title: `${segment.taskName}${segmentLabel}`,
       start: segment.start,
       end: segment.end,
       startMinute: timelineMinutes(segment.start),
       endMinute: timelineMinutes(segment.end),
       status: segment.status,
-      editable: Boolean(task)
+      editable: Boolean(task),
+      segmentNumber,
+      segmentCount
     };
   });
   const missedItems = missedTimelineItems({
@@ -733,7 +787,8 @@ function taskMatchesSegmentTime(task, segment) {
 function findTaskForSegment(segment, candidatesByTaskId, {
   segmentId = null,
   calendarEventId = null,
-  allowTaskIdFallback = true
+  allowTaskIdFallback = true,
+  allowLogicalTaskFallback = false
 } = {}) {
   const candidates = candidatesByTaskId.get(segment.taskId) ?? [];
   const identitySegmentId = segmentId ?? segment.segmentId ?? null;
@@ -760,6 +815,10 @@ function findTaskForSegment(segment, candidatesByTaskId, {
 
   if (allowTaskIdFallback && candidates.length === 1) {
     return candidates[0];
+  }
+
+  if (allowLogicalTaskFallback && candidates.length > 1) {
+    return candidates.find(activeEditableTask) ?? candidates[0];
   }
 
   return null;
@@ -789,13 +848,36 @@ export function selectTaskForCompletion(tasks, {
 export function mergePlanTasks({ calendarTasks = [], localTasks = [] }) {
   const merged = [];
   const calendarTaskIds = new Set();
+  const taskLevelOverrides = new Map(
+    localTasks
+      .filter((task) => task.taskLevelOverride)
+      .map((task) => [task.taskId, task])
+  );
 
   for (const task of calendarTasks) {
-    merged.push(task);
+    const override = taskLevelOverrides.get(task.taskId);
+    merged.push(override ? {
+      ...task,
+      ...taskConfigurationFromOverride(override),
+      taskId: task.taskId,
+      status: task.status,
+      segmentId: task.segmentId ?? null,
+      calendarEventId: task.calendarEventId ?? null,
+      plannedStart: task.plannedStart ?? null,
+      plannedEnd: task.plannedEnd ?? null,
+      autoFixed: task.autoFixed
+    } : task);
     calendarTaskIds.add(task.taskId);
   }
 
   for (const task of localTasks) {
+    if (task.taskLevelOverride) {
+      if (!calendarTaskIds.has(task.taskId)) {
+        merged.push(task);
+      }
+      continue;
+    }
+
     const calendarIndex = merged.findIndex((candidate) => (
       candidate.calendarEventId && candidate.calendarEventId === task.calendarEventId
     ));
@@ -815,6 +897,50 @@ export function mergePlanTasks({ calendarTasks = [], localTasks = [] }) {
   }
 
   return merged;
+}
+
+function durationMinutes(start, end) {
+  const minutes = minutesBetween(start, end);
+  return Number.isFinite(minutes) && minutes > 0 ? minutes : 0;
+}
+
+export function logicalTasksForSchedule(tasks) {
+  const groups = new Map();
+
+  for (const task of tasks) {
+    groups.set(task.taskId, [...(groups.get(task.taskId) ?? []), task]);
+  }
+
+  return [...groups.values()].flatMap((records) => {
+    const completed = records.filter((task) => task.status === TASK_STATUSES.COMPLETED);
+    const active = records.filter((task) => (
+      task.status !== TASK_STATUSES.COMPLETED && task.status !== TASK_STATUSES.SKIPPED
+    ));
+    if (records.length === 1 || active.length === 0) {
+      return records;
+    }
+
+    const representative = active[0];
+    const completedMinutes = completed.reduce((sum, task) => (
+      sum + durationMinutes(task.actualStart, task.actualEnd)
+    ), 0);
+    const remainingDesired = Math.max(0, representative.desiredMinutes - completedMinutes);
+    const remainingMinimum = Math.max(0, representative.minimumMinutes - completedMinutes);
+    const logicalActive = {
+      ...representative,
+      desiredMinutes: remainingDesired,
+      minimumMinutes: Math.min(remainingDesired, remainingMinimum),
+      calendarEventId: null,
+      segmentId: null,
+      plannedStart: null,
+      plannedEnd: null
+    };
+
+    return [
+      ...completed,
+      ...(remainingDesired > 0 ? [logicalActive] : [])
+    ];
+  });
 }
 
 function emptySyncOperations() {
@@ -902,13 +1028,16 @@ export function buildSyncOperations({
   }
 
   for (const segment of scheduledSegments) {
-    const task = findTaskForSegment(segment, candidatesByTaskId) ?? {
+    const identityTask = findTaskForSegment(segment, candidatesByTaskId);
+    const task = identityTask
+      ?? findTaskForSegment(segment, candidatesByTaskId, { allowLogicalTaskFallback: true })
+      ?? {
       taskId: segment.taskId,
       taskName: segment.taskName
     };
     const segmentIndex = scheduledSegmentIndexes.get(segment) ?? 0;
     const segmentId = segment.segmentId
-      ?? task.segmentId
+      ?? identityTask?.segmentId
       ?? stableSegmentId(segment.taskId, segmentIndex);
     const legacySegmentId = legacySegmentIdFor(segment);
     const exactExisting = bySegmentId.get(segmentId)
@@ -998,6 +1127,19 @@ function allTasks() {
   });
 }
 
+function logicalTaskDefinitions(tasks = allTasks()) {
+  const definitions = new Map();
+
+  for (const task of tasks) {
+    const current = definitions.get(task.taskId);
+    if (!current || (!activeEditableTask(current) && activeEditableTask(task))) {
+      definitions.set(task.taskId, task);
+    }
+  }
+
+  return [...definitions.values()];
+}
+
 function concreteAvailableBlocks() {
   return state.availableBlocks
     .filter((block) => block.enabled !== false)
@@ -1064,6 +1206,32 @@ function renderTaskPresetFieldOptions() {
   renderSelectOptions('energyDemand', ENERGY_DEMAND_OPTIONS);
   renderSelectOptions('physicalDemand', PHYSICAL_DEMAND_OPTIONS);
   renderSelectOptions('orderPreference', ORDER_PREFERENCE_OPTIONS);
+}
+
+function renderDependencyOptions(selectedTaskIds = []) {
+  const select = firstElement('select[name="dependencyTaskIds"]');
+  if (!select) {
+    return;
+  }
+
+  const selected = new Set(selectedTaskIds);
+  const editingTaskId = state.editingTaskKey?.startsWith('task:')
+    ? state.editingTaskKey.slice('task:'.length)
+    : null;
+  const options = logicalTaskDefinitions()
+    .filter((task) => task.status !== TASK_STATUSES.SKIPPED)
+    .filter((task) => task.taskId !== editingTaskId)
+    .sort((left, right) => left.taskName.localeCompare(right.taskName))
+    .map((task) => {
+      const label = task.status === TASK_STATUSES.COMPLETED
+        ? `${task.taskName}（已完成）`
+        : task.taskName;
+      const node = option(task.taskId, label);
+      node.selected = selected.has(task.taskId);
+      return node;
+    });
+
+  select.replaceChildren(...options);
 }
 
 function applyTaskTypePreset(taskType) {
@@ -1172,7 +1340,7 @@ function appendEditButton(parent, task) {
   const button = document.createElement('button');
   button.type = 'button';
   button.textContent = '编辑';
-  button.dataset.editTaskKey = taskEditKey(task);
+  button.dataset.editTaskKey = logicalTaskEditKey(task);
   parent.append(button);
 }
 
@@ -1518,13 +1686,14 @@ function renderSyncPreview() {
 }
 
 function recalculate() {
+  const taskRecords = allTasks();
   state.schedule = scheduleDay({
     planDate: state.planDate,
     now: localNowString(),
     scheduleStart: scheduleStartForDate(state.planDate),
     availableBlocks: concreteAvailableBlocks(),
     protectedBlocks: protectedBlocksFromCalendar(),
-    tasks: allTasks()
+    tasks: logicalTasksForSchedule(taskRecords)
   });
   renderSchedule();
 }
@@ -1664,6 +1833,9 @@ export function taskInputFromFormData(data) {
     energyDemand: data.get('energyDemand'),
     physicalDemand: data.get('physicalDemand'),
     orderPreference: data.get('orderPreference'),
+    dependencyTaskIds: typeof data.getAll === 'function'
+      ? data.getAll('dependencyTaskIds')
+      : [],
     splittable: data.get('splittable') === 'on',
     minSegmentMinutes: data.get('minSegmentMinutes'),
     externalCommitment: data.get('externalCommitment'),
@@ -1698,6 +1870,7 @@ function fillTaskForm(task) {
   }
 
   const input = formInputForTask(task);
+  renderDependencyOptions(input.dependencyTaskIds);
   form.elements.taskName.value = input.taskName;
   form.elements.taskType.value = input.taskType;
   form.elements.desiredMinutes.value = input.desiredMinutes;
@@ -1727,6 +1900,7 @@ function resetTaskForm() {
   renderTaskTypeOptions();
   renderExecutionContextOptions();
   renderTaskPresetFieldOptions();
+  renderDependencyOptions();
   applyTaskTypePreset(form?.elements.taskType.value);
   setTaskFormMode(null);
 }
@@ -1735,8 +1909,17 @@ function findEditableTaskByKey(key) {
   return allTasks().find((task) => taskEditKey(task) === key) ?? null;
 }
 
+function findLogicalTaskByKey(key) {
+  if (!key?.startsWith('task:')) {
+    return null;
+  }
+
+  const taskId = key.slice('task:'.length);
+  return logicalTaskDefinitions().find((task) => task.taskId === taskId) ?? null;
+}
+
 function editTask(key) {
-  const task = findEditableTaskByKey(key);
+  const task = findLogicalTaskByKey(key);
 
   if (!task) {
     showMessage('找不到要编辑的任务。', true);
@@ -1750,7 +1933,7 @@ function editTask(key) {
 }
 
 function editedTaskFromForm(form) {
-  const existing = findEditableTaskByKey(state.editingTaskKey);
+  const existing = findLogicalTaskByKey(state.editingTaskKey);
 
   if (!existing) {
     throw new RangeError('editing task no longer exists');
@@ -1764,10 +1947,9 @@ function editedTaskFromForm(form) {
 
   return {
     ...updated,
-    calendarEventId: existing.calendarEventId ?? null,
-    segmentId: existing.segmentId ?? null,
     planDate: existing.planDate ?? state.planDate,
-    localOverride: Boolean(existing.calendarEventId)
+    taskLevelOverride: Boolean(existing.calendarEventId || existing.segmentId),
+    localOverride: Boolean(existing.calendarEventId || existing.segmentId)
   };
 }
 
@@ -2062,6 +2244,7 @@ export function initApp() {
   renderTaskTypeOptions();
   renderExecutionContextOptions();
   renderTaskPresetFieldOptions();
+  renderDependencyOptions();
   applyTaskTypePreset(firstElement('select[name="taskType"]')?.value);
   setTaskFormMode(null);
   renderAvailableBlocks();

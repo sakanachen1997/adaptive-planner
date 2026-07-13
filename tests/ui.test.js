@@ -20,6 +20,7 @@ import {
   formInputForTask,
   shouldShowRecoveryActions,
   mergePlanTasks,
+  logicalTasksForSchedule,
   resetCalendarStateForDateChange,
   selectTaskForCompletion,
   timelineBounds,
@@ -246,7 +247,8 @@ test('formInputForTask preserves task fields as form-ready values', () => {
     externalCommitment: 4,
     fixed: true,
     fixedStart: '19:00',
-    fixedEnd: '20:00'
+    fixedEnd: '20:00',
+    dependencyTaskIds: ['research']
   }), {
     taskName: 'Math',
     taskType: '自定义',
@@ -263,7 +265,8 @@ test('formInputForTask preserves task fields as form-ready values', () => {
     externalCommitment: '4',
     fixed: true,
     fixedStart: '19:00',
-    fixedEnd: '20:00'
+    fixedEnd: '20:00',
+    dependencyTaskIds: ['research']
   });
 });
 
@@ -1427,4 +1430,171 @@ test('selectTaskForCompletion allows task id fallback for a single candidate', (
     segmentStart: '2026-07-07T12:00:00',
     segmentEnd: '2026-07-07T12:10:00'
   }), task);
+});
+
+test('timeline numbers every segment of a split logical task', () => {
+  const items = buildTimelineItems({
+    schedule: {
+      status: 'ok',
+      segments: [
+        {
+          taskId: 'split-numbered',
+          taskName: '分段任务',
+          status: TASK_STATUSES.SCHEDULED,
+          start: '2026-07-07T09:00:00',
+          end: '2026-07-07T09:30:00'
+        },
+        {
+          taskId: 'split-numbered',
+          taskName: '分段任务',
+          status: TASK_STATUSES.SCHEDULED,
+          start: '2026-07-07T15:00:00',
+          end: '2026-07-07T15:30:00'
+        }
+      ]
+    },
+    tasks: [{ taskId: 'split-numbered', taskName: '分段任务' }]
+  });
+
+  assert.deepEqual(items.map((item) => item.title), ['分段任务 · 1/2', '分段任务 · 2/2']);
+  assert.deepEqual(items.map((item) => item.segmentNumber), [1, 2]);
+});
+
+test('split Calendar records become one logical task for rescheduling', () => {
+  const records = [
+    {
+      taskId: 'split-logical',
+      taskName: '分段任务',
+      status: TASK_STATUSES.SCHEDULED,
+      segmentId: 'split-logical_segment_1',
+      calendarEventId: 'event-one',
+      desiredMinutes: 60,
+      minimumMinutes: 30
+    },
+    {
+      taskId: 'split-logical',
+      taskName: '分段任务',
+      status: TASK_STATUSES.SCHEDULED,
+      segmentId: 'split-logical_segment_2',
+      calendarEventId: 'event-two',
+      desiredMinutes: 60,
+      minimumMinutes: 30
+    }
+  ];
+  const logical = logicalTasksForSchedule(records);
+
+  assert.equal(logical.length, 1);
+  assert.equal(logical[0].taskId, 'split-logical');
+  assert.equal(logical[0].calendarEventId, null);
+  assert.equal(logical[0].segmentId, null);
+});
+
+test('timeline keeps rescheduled split segments editable when Calendar times no longer match', () => {
+  const calendarRecords = [
+    {
+      taskId: 'moved-split',
+      taskName: '移动后的分段任务',
+      status: TASK_STATUSES.SCHEDULED,
+      segmentId: 'moved-split_segment_1',
+      calendarEventId: 'event-one',
+      plannedStart: '2026-07-07T09:00:00',
+      plannedEnd: '2026-07-07T09:30:00'
+    },
+    {
+      taskId: 'moved-split',
+      taskName: '移动后的分段任务',
+      status: TASK_STATUSES.SCHEDULED,
+      segmentId: 'moved-split_segment_2',
+      calendarEventId: 'event-two',
+      plannedStart: '2026-07-07T15:00:00',
+      plannedEnd: '2026-07-07T15:30:00'
+    }
+  ];
+  const items = buildTimelineItems({
+    schedule: {
+      status: 'ok',
+      segments: [{
+        taskId: 'moved-split',
+        taskName: '移动后的分段任务',
+        status: TASK_STATUSES.SCHEDULED,
+        start: '2026-07-07T12:00:00',
+        end: '2026-07-07T13:00:00'
+      }]
+    },
+    tasks: calendarRecords
+  });
+
+  assert.equal(items[0].editable, true);
+  assert.equal(items[0].task.taskId, 'moved-split');
+});
+
+test('task-level Calendar edits overlay every segment while preserving event identity', () => {
+  const merged = mergePlanTasks({
+    calendarTasks: [
+      { taskId: 'split-edit', taskName: '旧名称', segmentId: 'segment-1', calendarEventId: 'event-1', status: TASK_STATUSES.SCHEDULED },
+      { taskId: 'split-edit', taskName: '旧名称', segmentId: 'segment-2', calendarEventId: 'event-2', status: TASK_STATUSES.SCHEDULED }
+    ],
+    localTasks: [{
+      taskId: 'split-edit',
+      taskName: '新名称',
+      importance: 5,
+      taskLevelOverride: true,
+      localOverride: true
+    }]
+  });
+
+  assert.deepEqual(merged.map((task) => task.taskName), ['新名称', '新名称']);
+  assert.deepEqual(merged.map((task) => task.calendarEventId), ['event-1', 'event-2']);
+  assert.deepEqual(merged.map((task) => task.segmentId), ['segment-1', 'segment-2']);
+});
+
+test('rescheduled split sync keeps distinct segment ids and edited dependency metadata', () => {
+  const records = mergePlanTasks({
+    calendarTasks: [
+      {
+        taskId: 'split-sync-edit',
+        taskName: '旧名称',
+        segmentId: 'old-segment-1',
+        calendarEventId: 'event-1',
+        plannedStart: '2026-07-07T09:00:00',
+        status: TASK_STATUSES.SCHEDULED
+      },
+      {
+        taskId: 'split-sync-edit',
+        taskName: '旧名称',
+        segmentId: 'old-segment-2',
+        calendarEventId: 'event-2',
+        plannedStart: '2026-07-07T15:00:00',
+        status: TASK_STATUSES.SCHEDULED
+      }
+    ],
+    localTasks: [{
+      taskId: 'split-sync-edit',
+      taskName: '新名称',
+      dependencyTaskIds: ['research'],
+      taskLevelOverride: true,
+      localOverride: true
+    }]
+  });
+  const operations = buildSyncOperations({
+    schedule: {
+      status: 'ok',
+      segments: [
+        { taskId: 'split-sync-edit', taskName: '新名称', status: TASK_STATUSES.SCHEDULED, start: '2026-07-07T11:00:00', end: '2026-07-07T11:30:00' },
+        { taskId: 'split-sync-edit', taskName: '新名称', status: TASK_STATUSES.SCHEDULED, start: '2026-07-07T16:00:00', end: '2026-07-07T16:30:00' }
+      ]
+    },
+    tasks: records,
+    existingPlanTasks: records,
+    planDate: '2026-07-07'
+  });
+  const metadata = operations.updates.map((operation) => extractPlanMetadata(operation.description));
+
+  assert.deepEqual(operations.updates.map((operation) => operation.eventId), ['event-1', 'event-2']);
+  assert.deepEqual(metadata.map((item) => item.segmentId), [
+    'split-sync-edit_segment_1',
+    'split-sync-edit_segment_2'
+  ]);
+  assert.ok(metadata.every((item) => item.taskName === '新名称'));
+  assert.ok(metadata.every((item) => item.dependencyTaskIds[0] === 'research'));
 });

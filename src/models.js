@@ -157,6 +157,22 @@ function valueOrDefault(input, fieldName, defaultValue) {
   return Object.hasOwn(input, fieldName) ? input[fieldName] : defaultValue;
 }
 
+function dependencyTaskIds(value, taskId) {
+  if (value == null) {
+    return [];
+  }
+
+  if (!Array.isArray(value)) {
+    throw new RangeError('dependencyTaskIds must be an array');
+  }
+
+  const result = [...new Set(value.map((id) => String(id).trim()).filter(Boolean))];
+  if (result.includes(taskId)) {
+    throw new RangeError('a task cannot depend on itself');
+  }
+  return result;
+}
+
 export function createTask(input) {
   const taskType = normalizeTaskType(input.taskType);
   const defaults = TASK_TYPE_DEFAULTS[taskType];
@@ -173,8 +189,10 @@ export function createTask(input) {
     throw new RangeError('minimumMinutes must be less than or equal to desiredMinutes');
   }
 
+  const taskId = input.taskId ?? generateTaskId();
+
   return {
-    taskId: input.taskId ?? generateTaskId(),
+    taskId,
     taskName,
     taskType,
     desiredMinutes,
@@ -194,6 +212,7 @@ export function createTask(input) {
     status: input.status ?? TASK_STATUSES.PENDING,
     actualStart: input.actualStart ?? null,
     actualEnd: input.actualEnd ?? null,
-    weekPlanId: input.weekPlanId ?? null
+    weekPlanId: input.weekPlanId ?? null,
+    dependencyTaskIds: dependencyTaskIds(input.dependencyTaskIds, taskId)
   };
 }

@@ -1483,3 +1483,105 @@ test('completed tasks with invalid actual times are omitted from result segments
   assert.equal(result.status, 'ok');
   assert.deepEqual(result.segments, []);
 });
+
+test('task dependencies force successors to start after every predecessor segment', () => {
+  const predecessor = task({
+    taskId: 'research',
+    taskName: '调研',
+    desiredMinutes: 60,
+    minimumMinutes: 60,
+    splittable: true,
+    minSegmentMinutes: 30
+  });
+  const successor = task({
+    taskId: 'write',
+    taskName: '写作',
+    desiredMinutes: 30,
+    minimumMinutes: 30,
+    dependencyTaskIds: ['research']
+  });
+  const result = scheduleDay({
+    planDate: PLAN_DATE,
+    now: NOW,
+    availableBlocks: [
+      block('09:00', '09:30'),
+      block('10:00', '10:30'),
+      block('11:00', '11:30')
+    ],
+    protectedBlocks: [],
+    tasks: [successor, predecessor]
+  });
+  const predecessorSegments = scheduledSegments(result).filter((segment) => segment.taskId === 'research');
+  const successorSegment = scheduledSegments(result).find((segment) => segment.taskId === 'write');
+
+  assert.equal(result.status, 'ok');
+  assert.equal(predecessorSegments.length, 2);
+  assert.ok(successorSegment.start >= predecessorSegments.at(-1).end);
+});
+
+test('dependency cycles crash scheduling with an explicit conflict', () => {
+  const result = scheduleDay({
+    planDate: PLAN_DATE,
+    now: NOW,
+    availableBlocks: [block('09:00', '12:00')],
+    protectedBlocks: [],
+    tasks: [
+      task({ taskId: 'a', taskName: 'A', dependencyTaskIds: ['b'] }),
+      task({ taskId: 'b', taskName: 'B', dependencyTaskIds: ['a'] })
+    ]
+  });
+
+  assert.equal(result.status, 'conflict');
+  assert.equal(result.conflict.kind, 'dependency_cycle');
+  assert.deepEqual(result.conflict.dependencyIssues.map((item) => item.taskId).sort(), ['a', 'b']);
+});
+
+test('missing dependencies crash scheduling instead of being silently ignored', () => {
+  const result = scheduleDay({
+    planDate: PLAN_DATE,
+    now: NOW,
+    availableBlocks: [block('09:00', '12:00')],
+    protectedBlocks: [],
+    tasks: [task({ taskId: 'write', taskName: '写作', dependencyTaskIds: ['deleted-task'] })]
+  });
+
+  assert.equal(result.status, 'conflict');
+  assert.equal(result.conflict.kind, 'missing_dependency');
+  assert.equal(result.conflict.dependencyIssues[0].dependencyTaskId, 'deleted-task');
+});
+
+test('dependencies are enforced across work and home scheduling windows', () => {
+  const result = scheduleDay({
+    planDate: PLAN_DATE,
+    now: NOW,
+    availableBlocks: [
+      block('09:00', '10:00', CONTEXTS.WORK),
+      block('19:00', '20:00', CONTEXTS.HOME)
+    ],
+    protectedBlocks: [],
+    tasks: [
+      task({
+        taskId: 'work-first',
+        taskName: '工作任务',
+        desiredMinutes: 60,
+        minimumMinutes: 60,
+        executionContext: CONTEXTS.WORK
+      }),
+      task({
+        taskId: 'home-second',
+        taskName: '居家任务',
+        desiredMinutes: 60,
+        minimumMinutes: 60,
+        executionContext: CONTEXTS.HOME,
+        dependencyTaskIds: ['work-first']
+      })
+    ]
+  });
+  const segments = scheduledSegments(result);
+
+  assert.equal(result.status, 'ok');
+  assert.ok(
+    segments.find((segment) => segment.taskId === 'home-second').start
+      >= segments.find((segment) => segment.taskId === 'work-first').end
+  );
+});

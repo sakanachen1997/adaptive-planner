@@ -93,7 +93,9 @@ function completedSegments(tasks) {
         taskName: task.taskName,
         start,
         end,
-        status: TASK_STATUSES.COMPLETED
+        status: TASK_STATUSES.COMPLETED,
+        ...(task.segmentId ? { segmentId: task.segmentId } : {}),
+        ...(task.calendarEventId ? { calendarEventId: task.calendarEventId } : {})
       };
     })
     .filter(Boolean);
@@ -540,10 +542,85 @@ function candidateBlocksForTask(task, blocks) {
     .filter((block) => block.usableMinutes > 0);
 }
 
-function attemptPlacement({ fixedTasks, flexibleTasks, allocations, available, planDate, now }) {
+function dependencyIds(task) {
+  return Array.isArray(task.dependencyTaskIds) ? task.dependencyTaskIds : [];
+}
+
+function orderByDependencies(tasks, comparator) {
+  const taskIds = new Set(tasks.map((task) => task.taskId));
+  const byId = new Map(tasks.map((task) => [task.taskId, task]));
+  const indegree = new Map(tasks.map((task) => [task.taskId, 0]));
+  const successors = new Map(tasks.map((task) => [task.taskId, []]));
+
+  for (const task of tasks) {
+    for (const dependencyId of dependencyIds(task)) {
+      if (!taskIds.has(dependencyId)) {
+        continue;
+      }
+      indegree.set(task.taskId, indegree.get(task.taskId) + 1);
+      successors.get(dependencyId).push(task.taskId);
+    }
+  }
+
+  const ready = tasks.filter((task) => indegree.get(task.taskId) === 0).sort(comparator);
+  const ordered = [];
+  while (ready.length > 0) {
+    const task = ready.shift();
+    ordered.push(task);
+    for (const successorId of successors.get(task.taskId)) {
+      indegree.set(successorId, indegree.get(successorId) - 1);
+      if (indegree.get(successorId) === 0) {
+        ready.push(byId.get(successorId));
+        ready.sort(comparator);
+      }
+    }
+  }
+
+  return ordered.length === tasks.length ? ordered : [...tasks].sort(comparator);
+}
+
+function latestDependencyEnd(task, dependencyEnds) {
+  return dependencyIds(task).reduce((latest, dependencyId) => {
+    const end = dependencyEnds.get(dependencyId);
+    return end && (!latest || end > latest) ? end : latest;
+  }, null);
+}
+
+function blocksAfter(blocks, earliestStart) {
+  if (!earliestStart) {
+    return blocks;
+  }
+
+  return blocks
+    .filter((block) => block.end > earliestStart)
+    .map((block) => ({
+      ...block,
+      start: block.start < earliestStart ? earliestStart : block.start
+    }));
+}
+
+function recordLatestEnd(dependencyEnds, taskId, segments) {
+  for (const segment of segments) {
+    const current = dependencyEnds.get(taskId);
+    if (!current || segment.end > current) {
+      dependencyEnds.set(taskId, segment.end);
+    }
+  }
+}
+
+function attemptPlacement({
+  fixedTasks,
+  flexibleTasks,
+  allocations,
+  available,
+  planDate,
+  now,
+  initialDependencyEnds = new Map()
+}) {
   let blocks = available.map((block) => ({ ...block }));
   const scheduled = [];
   const unscheduled = [];
+  const dependencyEnds = new Map(initialDependencyEnds);
 
   const record = (task, allocatedMinutes, candidateBlocks, result) => {
     const scheduledMinutes = result.segments.reduce((sum, segment) => (
@@ -555,7 +632,8 @@ function attemptPlacement({ fixedTasks, flexibleTasks, allocations, available, p
     }
 
     scheduled.push(...result.segments);
-    blocks = result.blocks;
+    blocks = subtractIntervals(blocks, result.segments);
+    recordLatestEnd(dependencyEnds, task.taskId, result.segments);
 
     if (result.remaining > 0) {
       unscheduled.push({
@@ -575,6 +653,8 @@ function attemptPlacement({ fixedTasks, flexibleTasks, allocations, available, p
   for (const task of fixedTasks) {
     const allocatedMinutes = allocations.get(task.taskId) ?? task.effectiveMinimumMinutes;
     const fixedInterval = fixedFutureInterval(task, planDate, now);
+    const earliestStart = latestDependencyEnd(task, dependencyEnds);
+    const eligibleBlocks = blocksAfter(blocks, earliestStart);
     const candidateBlocks = fixedInterval
       ? [{ ...fixedInterval, context: task.executionContext, usableMinutes: intervalMinutes(fixedInterval.start, fixedInterval.end) }]
       : [];
@@ -582,7 +662,7 @@ function attemptPlacement({ fixedTasks, flexibleTasks, allocations, available, p
       task,
       allocatedMinutes,
       candidateBlocks,
-      placeFixedTask(task, allocatedMinutes, blocks, planDate, now)
+      placeFixedTask(task, allocatedMinutes, eligibleBlocks, planDate, now)
     );
 
     if (failure) {
@@ -592,15 +672,16 @@ function attemptPlacement({ fixedTasks, flexibleTasks, allocations, available, p
 
   for (const task of flexibleTasks) {
     const allocatedMinutes = allocations.get(task.taskId) ?? task.effectiveMinimumMinutes;
-    const candidateBlocks = candidateBlocksForTask(task, blocks);
-    const failure = record(task, allocatedMinutes, candidateBlocks, placeTask(task, allocatedMinutes, blocks));
+    const eligibleBlocks = blocksAfter(blocks, latestDependencyEnd(task, dependencyEnds));
+    const candidateBlocks = candidateBlocksForTask(task, eligibleBlocks);
+    const failure = record(task, allocatedMinutes, candidateBlocks, placeTask(task, allocatedMinutes, eligibleBlocks));
 
     if (failure) {
       return { scheduled, unscheduled, failure };
     }
   }
 
-  return { scheduled, unscheduled, failure: null };
+  return { scheduled, unscheduled, failure: null, dependencyEnds };
 }
 
 function placementFailure(task, scheduledMinutes, plannedMinutes, candidateBlocks) {
@@ -668,6 +749,7 @@ function conflictResult(
     desiredMinutes = null,
     belowMinimum = [],
     deadlineViolations = [],
+    dependencyIssues = [],
     actions = [...CONFLICT_ACTIONS]
   } = {}
 ) {
@@ -682,16 +764,114 @@ function conflictResult(
       desiredMinutes,
       belowMinimum,
       deadlineViolations,
+      dependencyIssues,
       actions
     }
   };
 }
 
+function dependencyGraphIssue(tasks) {
+  const completedIds = new Set(
+    tasks.filter((task) => task.status === TASK_STATUSES.COMPLETED).map((task) => task.taskId)
+  );
+  const active = activeTasks(tasks);
+  const activeById = new Map(active.map((task) => [task.taskId, task]));
+  const missing = [];
+
+  for (const task of active) {
+    for (const dependencyId of dependencyIds(task)) {
+      if (!activeById.has(dependencyId) && !completedIds.has(dependencyId)) {
+        missing.push({
+          taskId: task.taskId,
+          taskName: task.taskName,
+          dependencyTaskId: dependencyId
+        });
+      }
+    }
+  }
+
+  if (missing.length > 0) {
+    return { kind: 'missing_dependency', dependencyIssues: missing };
+  }
+
+  const indegree = new Map(active.map((task) => [task.taskId, 0]));
+  const successors = new Map(active.map((task) => [task.taskId, []]));
+  for (const task of active) {
+    for (const dependencyId of dependencyIds(task)) {
+      if (activeById.has(dependencyId)) {
+        indegree.set(task.taskId, indegree.get(task.taskId) + 1);
+        successors.get(dependencyId).push(task.taskId);
+      }
+    }
+  }
+  const ready = active.filter((task) => indegree.get(task.taskId) === 0);
+  while (ready.length > 0) {
+    const task = ready.shift();
+    for (const successorId of successors.get(task.taskId)) {
+      indegree.set(successorId, indegree.get(successorId) - 1);
+      if (indegree.get(successorId) === 0) {
+        ready.push(activeById.get(successorId));
+      }
+    }
+  }
+  const cyclic = active.filter((task) => indegree.get(task.taskId) > 0);
+
+  if (cyclic.length > 0) {
+    return {
+      kind: 'dependency_cycle',
+      dependencyIssues: cyclic.map((task) => ({ taskId: task.taskId, taskName: task.taskName }))
+    };
+  }
+
+  return null;
+}
+
+function completedDependencyEnds(tasks) {
+  const result = new Map();
+  for (const task of tasks.filter((item) => item.status === TASK_STATUSES.COMPLETED)) {
+    const end = validDateTime(task.actualEnd);
+    if (end && (!result.has(task.taskId) || end > result.get(task.taskId))) {
+      result.set(task.taskId, end);
+    }
+  }
+  return result;
+}
+
+function dependencyOrderIssues(tasks, segments) {
+  const starts = new Map();
+  const ends = new Map();
+  for (const segment of segments) {
+    const start = starts.get(segment.taskId);
+    const end = ends.get(segment.taskId);
+    if (!start || segment.start < start) {
+      starts.set(segment.taskId, segment.start);
+    }
+    if (!end || segment.end > end) {
+      ends.set(segment.taskId, segment.end);
+    }
+  }
+
+  return activeTasks(tasks).flatMap((task) => dependencyIds(task).flatMap((dependencyId) => {
+    const dependencyEnd = ends.get(dependencyId);
+    const taskStart = starts.get(task.taskId);
+    if (!dependencyEnd || !taskStart || dependencyEnd <= taskStart) {
+      return [];
+    }
+    return [{
+      taskId: task.taskId,
+      taskName: task.taskName,
+      dependencyTaskId: dependencyId,
+      dependencyEnd,
+      taskStart
+    }];
+  }));
+}
+
 const FLOATING_ENUMERATION_LIMIT = 8;
 
-function scheduleWindow({ tasks, blocks, planDate, now }) {
+function scheduleWindow({ tasks, blocks, planDate, now, dependencyEnds = new Map() }) {
   const capacity = totalMinutes(blocks);
-  const ordered = [...tasks].sort(placementComparator(now));
+  const ordered = orderByDependencies(tasks, placementComparator(now));
   const fixedTasks = ordered.filter((task) => task.fixed && task.fixedStart && task.fixedEnd);
   const flexibleTasks = ordered.filter((task) => !fixedTasks.includes(task));
   const compressionCaps = new Map();
@@ -700,7 +880,15 @@ function scheduleWindow({ tasks, blocks, planDate, now }) {
 
   while (true) {
     allocations = withAllocationCaps(allocateDurations(tasks, capacity, now), compressionCaps);
-    attempt = attemptPlacement({ fixedTasks, flexibleTasks, allocations, available: blocks, planDate, now });
+    attempt = attemptPlacement({
+      fixedTasks,
+      flexibleTasks,
+      allocations,
+      available: blocks,
+      planDate,
+      now,
+      initialDependencyEnds: dependencyEnds
+    });
 
     if (!attempt.failure) {
       break;
@@ -740,7 +928,14 @@ function scheduleWindow({ tasks, blocks, planDate, now }) {
     sum + Math.max(0, task.effectiveDesiredMinutes - (placedByTask.get(task.taskId) ?? 0))
   ), 0);
 
-  return { scheduled: attempt.scheduled, unscheduled: attempt.unscheduled, failure: null, allocations, compression };
+  return {
+    scheduled: attempt.scheduled,
+    unscheduled: attempt.unscheduled,
+    failure: null,
+    allocations,
+    compression,
+    dependencyEnds: attempt.dependencyEnds
+  };
 }
 
 function partitionWindows(blocks) {
@@ -795,6 +990,49 @@ function classifyWindowTasks(schedulable, windowsMap, planDate, now) {
   return { fixedByWindow, dedicatedByWindow, floating };
 }
 
+function orderedContextsForDependencies(tasksByContext, fallbackOrder) {
+  const contextIndex = new Map(fallbackOrder.map((context, index) => [context, index]));
+  const contextByTaskId = new Map();
+  for (const [context, tasks] of tasksByContext) {
+    for (const task of tasks) {
+      contextByTaskId.set(task.taskId, context);
+    }
+  }
+
+  const indegree = new Map(fallbackOrder.map((context) => [context, 0]));
+  const successors = new Map(fallbackOrder.map((context) => [context, new Set()]));
+  for (const [context, tasks] of tasksByContext) {
+    for (const task of tasks) {
+      for (const dependencyId of dependencyIds(task)) {
+        const dependencyContext = contextByTaskId.get(dependencyId);
+        if (!dependencyContext || dependencyContext === context) {
+          continue;
+        }
+        if (!successors.get(dependencyContext).has(context)) {
+          successors.get(dependencyContext).add(context);
+          indegree.set(context, indegree.get(context) + 1);
+        }
+      }
+    }
+  }
+
+  const ready = fallbackOrder.filter((context) => indegree.get(context) === 0);
+  const ordered = [];
+  while (ready.length > 0) {
+    ready.sort((left, right) => contextIndex.get(left) - contextIndex.get(right));
+    const context = ready.shift();
+    ordered.push(context);
+    for (const successor of successors.get(context)) {
+      indegree.set(successor, indegree.get(successor) - 1);
+      if (indegree.get(successor) === 0) {
+        ready.push(successor);
+      }
+    }
+  }
+
+  return ordered.length === fallbackOrder.length ? ordered : fallbackOrder;
+}
+
 function evaluateAssignment(assignment, ctx) {
   // Windows are scheduled in sequence over a shared remaining-time pool so that
   // blocks of different contexts that overlap in wall-clock time are never
@@ -802,17 +1040,30 @@ function evaluateAssignment(assignment, ctx) {
   // identical to scheduling each window independently.
   let remaining = ctx.available.map((block) => ({ ...block }));
   const perWindow = new Map();
-
-  for (const context of ctx.orderedContexts) {
-    const blocks = remaining.filter((block) => block.context === context);
-    const tasks = [
+  let dependencyEnds = new Map(ctx.completedDependencyEnds);
+  const tasksByContext = new Map(ctx.orderedContexts.map((context) => [
+    context,
+    [
       ...ctx.fixedByWindow.get(context),
       ...ctx.dedicatedByWindow.get(context),
       ...(assignment.get(context) ?? [])
-    ];
-    const result = scheduleWindow({ tasks, blocks, planDate: ctx.planDate, now: ctx.now });
+    ]
+  ]));
+  const orderedContexts = orderedContextsForDependencies(tasksByContext, ctx.orderedContexts);
+
+  for (const context of orderedContexts) {
+    const blocks = remaining.filter((block) => block.context === context);
+    const tasks = tasksByContext.get(context);
+    const result = scheduleWindow({
+      tasks,
+      blocks,
+      planDate: ctx.planDate,
+      now: ctx.now,
+      dependencyEnds
+    });
     perWindow.set(context, result);
     remaining = subtractIntervals(remaining, result.scheduled);
+    dependencyEnds = result.dependencyEnds ?? dependencyEnds;
   }
 
   const conflicts = [...perWindow.values()].filter((w) => w.failure).map((w) => w.failure);
@@ -919,6 +1170,14 @@ export function scheduleDay({
   const deadlineViolations = active
     .map((task) => fixedDeadlineViolation(task, planDate))
     .filter(Boolean);
+  const dependencyIssue = dependencyGraphIssue(tasks);
+
+  if (dependencyIssue) {
+    return conflictResult(planDate, completed, availableMinutes, requiredMinimumMinutes, {
+      ...dependencyIssue,
+      actions: ['修改任务的前置任务，消除缺失引用或依赖环后重排']
+    });
+  }
 
   if (deadlineViolations.length > 0) {
     return conflictResult(planDate, completed, availableMinutes, requiredMinimumMinutes, {
@@ -969,7 +1228,8 @@ export function scheduleDay({
       available,
       orderedContexts,
       planDate,
-      now: schedulingNow
+      now: schedulingNow,
+      completedDependencyEnds: completedDependencyEnds(tasks)
     },
     floating
   );
@@ -1000,11 +1260,21 @@ export function scheduleDay({
     }
   }
   const durationPlan = durationPlanSummary(schedulableTasks, mergedAllocations, availableMinutes);
+  const allSegments = sortSegments([...completed, ...scheduled]);
+  const orderIssues = dependencyOrderIssues(tasks, allSegments);
+
+  if (orderIssues.length > 0) {
+    return conflictResult(planDate, completed, availableMinutes, requiredMinimumMinutes, {
+      kind: 'dependency_order_violation',
+      dependencyIssues: orderIssues,
+      actions: ['调整固定时间、任务场景或可用时间，使前置任务能先完成']
+    });
+  }
 
   return {
     status: unscheduled.length > 0 ? 'partial' : 'ok',
     planDate,
-    segments: sortSegments([...completed, ...scheduled]),
+    segments: allSegments,
     unscheduled,
     durationPlan: withPlacedActualDurations(durationPlan, scheduled)
   };
