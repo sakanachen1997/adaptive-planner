@@ -1317,10 +1317,18 @@ export function scheduleDay({
     planDate,
     schedulingNow
   );
-  // Schedule concrete-context windows before the shared "any" window so that
-  // context-restricted tasks claim overlapping time before flexible ones.
+  // Windows are scheduled in sequence over a shared time pool (see
+  // evaluateAssignment). When windows overlap in wall-clock time, an earlier
+  // window can consume time a later window depends on. Order so that:
+  //   1. the shared "any" window goes last (concrete-context tasks claim their
+  //      time before flexible ones), and
+  //   2. among the rest, smaller (more constrained) windows go first, so a
+  //      window whose only time overlaps a larger one is not starved by it.
+  const windowCapacity = (context) => totalMinutes(windowsMap.get(context));
   const orderedContexts = [...windowsMap.keys()].sort((left, right) => (
     (left === CONTEXTS.ANY ? 1 : 0) - (right === CONTEXTS.ANY ? 1 : 0)
+      || windowCapacity(left) - windowCapacity(right)
+      || String(left).localeCompare(String(right))
   ));
   const best = selectBestAssignment(
     {

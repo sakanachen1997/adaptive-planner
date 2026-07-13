@@ -1458,6 +1458,37 @@ test('repack reclaims wasted gaps and grows the highest-priority under-desired t
   assertNoOverlaps(scheduledSegments(result));
 });
 
+test('custom-context window is not starved by an overlapping work window', () => {
+  const CUSTOM = 'custom:c1';
+  const result = scheduleDay({
+    planDate: PLAN_DATE,
+    now: `${PLAN_DATE}T08:00:00`,
+    availableBlocks: [
+      block('10:10', '16:30', CONTEXTS.WORK),
+      { start: `${PLAN_DATE}T13:00:00`, end: `${PLAN_DATE}T16:30:00`, context: CUSTOM }
+    ],
+    protectedBlocks: [],
+    tasks: [
+      task({ taskName: 'xilinx', taskType: '编码工作', desiredMinutes: 70, minimumMinutes: 50, importance: 4 }),
+      task({ taskName: 'initramfs', taskType: '复杂教程和学习', desiredMinutes: 60, minimumMinutes: 40, importance: 3, executionContext: CONTEXTS.WORK }),
+      task({ taskName: '午饭', taskType: '编码工作', desiredMinutes: 30, minimumMinutes: 30, importance: 3, fixed: true, fixedStart: '12:15', fixedEnd: '12:45' }),
+      task({ taskName: 'jo', taskType: '编码工作', desiredMinutes: 60, minimumMinutes: 60, importance: 3, fixed: true, fixedStart: '14:00', fixedEnd: '15:00' }),
+      task({ taskName: '渐进', taskType: '复杂教程和学习', desiredMinutes: 60, minimumMinutes: 30, importance: 3, executionContext: CONTEXTS.WORK }),
+      task({ taskName: '背单词', taskType: '背单词', desiredMinutes: 30, minimumMinutes: 10, importance: 3, executionContext: CONTEXTS.WORK }),
+      task({ taskName: '邮件下午', taskType: '编码工作', desiredMinutes: 30, minimumMinutes: 30, importance: 3, executionContext: CUSTOM, splittable: false })
+    ]
+  });
+
+  const mail = scheduledSegments(result).filter((segment) => segment.taskName === '邮件下午');
+
+  assert.notEqual(result.status, 'conflict');
+  assert.equal(mail.reduce((sum, segment) => sum + segment.allocatedMinutes, 0), 30);
+  assert.ok(mail.every((segment) => (
+    segment.start >= `${PLAN_DATE}T13:00:00` && segment.end <= `${PLAN_DATE}T16:30:00`
+  )));
+  assertNoOverlaps(scheduledSegments(result));
+});
+
 test('home-only tasks are not placed in work blocks', () => {
   const result = scheduleDay({
     planDate: PLAN_DATE,
