@@ -376,7 +376,8 @@ test('does not overlap scheduled segments when available blocks overlap across c
         taskType: '运动健身',
         desiredMinutes: 30,
         minimumMinutes: 30,
-        importance: 4
+        importance: 4,
+        executionContext: CONTEXTS.ANY
       })
     ]
   });
@@ -386,6 +387,28 @@ test('does not overlap scheduled segments when available blocks overlap across c
   assert.equal(result.status, 'ok');
   assert.equal(segments.length, 2);
   assertNoOverlaps(segments);
+});
+
+test('home-only tasks never use an any-context block during work hours', () => {
+  const result = scheduleDay({
+    planDate: PLAN_DATE,
+    now: NOW,
+    availableBlocks: [
+      block('10:00', '12:10', CONTEXTS.ANY),
+      block('17:10', '23:20', CONTEXTS.HOME)
+    ],
+    protectedBlocks: [],
+    tasks: [task({
+      taskId: 'home-only-evening',
+      taskName: '莉莉安娜',
+      desiredMinutes: 60,
+      minimumMinutes: 30,
+      executionContext: CONTEXTS.HOME
+    })]
+  });
+
+  assert.equal(result.status, 'ok');
+  assert.ok(scheduledSegments(result).every((segment) => segment.start >= `${PLAN_DATE}T17:10:00`));
 });
 
 test('returns conflict when a task has no compatible capacity for its minimum', () => {
@@ -1608,4 +1631,26 @@ test('named custom execution contexts only use their matching named block', () =
 
   assert.equal(result.status, 'ok');
   assert.equal(scheduledSegments(result)[0].start, `${PLAN_DATE}T15:00:00`);
+});
+
+test('legacy custom tasks migrate to a named custom block but not an any block', () => {
+  const result = scheduleDay({
+    planDate: PLAN_DATE,
+    now: NOW,
+    availableBlocks: [
+      { ...block('10:00', '11:00'), context: CONTEXTS.ANY },
+      { ...block('14:00', '15:00'), context: 'custom:a' }
+    ],
+    protectedBlocks: [],
+    tasks: [task({
+      taskId: 'legacy-custom',
+      taskName: '旧版自定义任务',
+      desiredMinutes: 60,
+      minimumMinutes: 60,
+      executionContext: CONTEXTS.CUSTOM
+    })]
+  });
+
+  assert.equal(result.status, 'ok');
+  assert.equal(scheduledSegments(result)[0].start, `${PLAN_DATE}T14:00:00`);
 });

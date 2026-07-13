@@ -31,7 +31,7 @@ const BASE_CONTEXT_OPTIONS = Object.freeze([
 ]);
 
 const BLOCK_CONTEXT_OPTIONS = Object.freeze([
-  { value: CONTEXTS.ANY, label: '任意时间' },
+  { value: CONTEXTS.ANY, label: '不限场景任务时间' },
   { value: CONTEXTS.WORK, label: '工作时间' },
   { value: CONTEXTS.HOME, label: '下班后' },
   { value: CONTEXTS.CUSTOM, label: '自定义' }

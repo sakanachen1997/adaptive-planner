@@ -26,9 +26,13 @@ function validDateTime(value) {
 }
 
 function contextCompatible(task, block) {
-  return task.executionContext === CONTEXTS.ANY
-    || block.context === CONTEXTS.ANY
-    || task.executionContext === block.context;
+  const taskContext = task.executionContext ?? CONTEXTS.ANY;
+  return taskContext === CONTEXTS.ANY
+    || taskContext === block.context
+    || (
+      taskContext === CONTEXTS.CUSTOM
+        && String(block.context).startsWith(`${CONTEXTS.CUSTOM}:`)
+    );
 }
 
 function normalizePositiveBlocks(blocks) {
