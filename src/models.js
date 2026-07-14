@@ -37,7 +37,8 @@ export const TASK_TYPE_DEFAULTS = freezeDefaults({
     minSegmentMinutes: 45,
     executionContext: CONTEXTS.WORK,
     orderPreference: ORDER_PREFERENCES.MORNING,
-    externalCommitment: 4
+    externalCommitment: 4,
+    batchGroup: null
   },
   复杂教程和学习: {
     energyDemand: 'high',
@@ -46,7 +47,8 @@ export const TASK_TYPE_DEFAULTS = freezeDefaults({
     minSegmentMinutes: 25,
     executionContext: CONTEXTS.ANY,
     orderPreference: ORDER_PREFERENCES.MORNING,
-    externalCommitment: 2
+    externalCommitment: 2,
+    batchGroup: null
   },
   背单词: {
     energyDemand: 'mediumLow',
@@ -55,7 +57,8 @@ export const TASK_TYPE_DEFAULTS = freezeDefaults({
     minSegmentMinutes: 10,
     executionContext: CONTEXTS.ANY,
     orderPreference: ORDER_PREFERENCES.ANY,
-    externalCommitment: 1
+    externalCommitment: 1,
+    batchGroup: null
   },
   打游戏: {
     energyDemand: 'low',
@@ -64,7 +67,8 @@ export const TASK_TYPE_DEFAULTS = freezeDefaults({
     minSegmentMinutes: 30,
     executionContext: CONTEXTS.HOME,
     orderPreference: ORDER_PREFERENCES.EVENING,
-    externalCommitment: 0
+    externalCommitment: 0,
+    batchGroup: null
   },
   运动健身: {
     energyDemand: 'medium',
@@ -73,7 +77,8 @@ export const TASK_TYPE_DEFAULTS = freezeDefaults({
     minSegmentMinutes: 30,
     executionContext: CONTEXTS.HOME,
     orderPreference: ORDER_PREFERENCES.EVENING,
-    externalCommitment: 2
+    externalCommitment: 2,
+    batchGroup: null
   },
   绘画委托副业: {
     energyDemand: 'mediumHigh',
@@ -82,7 +87,8 @@ export const TASK_TYPE_DEFAULTS = freezeDefaults({
     minSegmentMinutes: 30,
     executionContext: CONTEXTS.HOME,
     orderPreference: ORDER_PREFERENCES.EVENING,
-    externalCommitment: 4
+    externalCommitment: 4,
+    batchGroup: null
   },
   生活杂务: {
     energyDemand: 'low',
@@ -91,7 +97,18 @@ export const TASK_TYPE_DEFAULTS = freezeDefaults({
     minSegmentMinutes: 15,
     executionContext: CONTEXTS.ANY,
     orderPreference: ORDER_PREFERENCES.ANY,
-    externalCommitment: 1
+    externalCommitment: 1,
+    batchGroup: null
+  },
+  行政工作: {
+    energyDemand: 'low',
+    physicalDemand: 'low',
+    splittable: true,
+    minSegmentMinutes: 15,
+    executionContext: CONTEXTS.ANY,
+    orderPreference: ORDER_PREFERENCES.AFTERNOON,
+    externalCommitment: 2,
+    batchGroup: '行政工作'
   },
   自定义: {
     energyDemand: 'medium',
@@ -100,7 +117,8 @@ export const TASK_TYPE_DEFAULTS = freezeDefaults({
     minSegmentMinutes: 20,
     executionContext: CONTEXTS.ANY,
     orderPreference: ORDER_PREFERENCES.ANY,
-    externalCommitment: 1
+    externalCommitment: 1,
+    batchGroup: null
   }
 });
 
@@ -206,6 +224,7 @@ export function createTask(input) {
     energyDemand: input.energyDemand ?? defaults.energyDemand,
     physicalDemand: input.physicalDemand ?? defaults.physicalDemand,
     orderPreference: input.orderPreference ?? defaults.orderPreference,
+    batchGroup: input.batchGroup ?? defaults.batchGroup ?? null,
     splittable: input.splittable ?? defaults.splittable,
     minSegmentMinutes: positiveNumber(valueOrDefault(input, 'minSegmentMinutes', defaults.minSegmentMinutes), 'minSegmentMinutes'),
     externalCommitment: nonNegativeNumber(valueOrDefault(input, 'externalCommitment', defaults.externalCommitment), 'externalCommitment'),

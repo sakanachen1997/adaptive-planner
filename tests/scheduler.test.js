@@ -1489,6 +1489,49 @@ test('custom-context window is not starved by an overlapping work window', () =>
   assertNoOverlaps(scheduledSegments(result));
 });
 
+test('administrative tasks batch together even when a mid-priority task sits between them', () => {
+  const result = scheduleDay({
+    planDate: PLAN_DATE,
+    now: NOW,
+    availableBlocks: [block('09:00', '12:00', CONTEXTS.WORK)],
+    protectedBlocks: [],
+    tasks: [
+      task({ taskName: '回邮件', taskType: '行政工作', desiredMinutes: 30, minimumMinutes: 30, importance: 5 }),
+      task({ taskName: '写代码', taskType: '编码工作', desiredMinutes: 30, minimumMinutes: 30, importance: 4, executionContext: CONTEXTS.ANY }),
+      task({ taskName: '处理账单', taskType: '行政工作', desiredMinutes: 30, minimumMinutes: 30, importance: 2 })
+    ]
+  });
+
+  const byName = new Map(scheduledSegments(result).map((segment) => [segment.taskName, segment]));
+
+  assert.notEqual(result.status, 'conflict');
+  // The two administrative tasks are placed contiguously (batched), not split by 写代码.
+  const adminSegments = [byName.get('回邮件'), byName.get('处理账单')]
+    .sort((left, right) => left.start.localeCompare(right.start));
+  assert.equal(adminSegments[0].end, adminSegments[1].start);
+  assert.ok(byName.get('写代码').start >= adminSegments[1].end);
+  assertNoOverlaps(scheduledSegments(result));
+});
+
+test('batching never delays a deadline task past its deadline', () => {
+  const result = scheduleDay({
+    planDate: PLAN_DATE,
+    now: NOW,
+    availableBlocks: [block('09:00', '12:00', CONTEXTS.WORK)],
+    protectedBlocks: [],
+    tasks: [
+      task({ taskName: '回邮件', taskType: '行政工作', desiredMinutes: 30, minimumMinutes: 30, importance: 5 }),
+      task({ taskName: '赶截止', taskType: '编码工作', desiredMinutes: 30, minimumMinutes: 30, importance: 3, deadline: `${PLAN_DATE}T09:30:00` }),
+      task({ taskName: '处理账单', taskType: '行政工作', desiredMinutes: 30, minimumMinutes: 30, importance: 2 })
+    ]
+  });
+
+  const deadlineSegment = scheduledSegments(result).find((segment) => segment.taskName === '赶截止');
+
+  assert.notEqual(result.status, 'conflict');
+  assert.ok(deadlineSegment.end <= `${PLAN_DATE}T09:30:00`);
+});
+
 test('home-only tasks are not placed in work blocks', () => {
   const result = scheduleDay({
     planDate: PLAN_DATE,

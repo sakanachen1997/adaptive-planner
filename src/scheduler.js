@@ -709,9 +709,31 @@ function priorityDescending(now) {
   );
 }
 
-function placementComparator(now) {
-  const byPriority = priorityDescending(now);
+function batchRepresentativePriorities(tasks, now) {
+  const reps = new Map();
+  for (const task of tasks) {
+    if (!task.batchGroup) {
+      continue;
+    }
+    const priority = calculatePriority(task, now);
+    if (!reps.has(task.batchGroup) || priority > reps.get(task.batchGroup)) {
+      reps.set(task.batchGroup, priority);
+    }
+  }
+  return reps;
+}
 
+// The priority key used for placement ordering. Members of a batch group all
+// sort by their group's strongest priority, so same-group tasks cluster
+// together (and get placed contiguously) even across a mid-priority outsider.
+function orderingPriority(task, now, groupRep) {
+  if (task.batchGroup && groupRep.has(task.batchGroup)) {
+    return groupRep.get(task.batchGroup);
+  }
+  return calculatePriority(task, now);
+}
+
+function placementComparator(now, groupRep = new Map()) {
   return (left, right) => {
     const leftDeadline = validDateTime(left.deadline);
     const rightDeadline = validDateTime(right.deadline);
@@ -731,7 +753,15 @@ function placementComparator(now) {
       return leftRestricted ? -1 : 1;
     }
 
-    return byPriority(left, right);
+    const priorityDelta = orderingPriority(right, now, groupRep) - orderingPriority(left, now, groupRep);
+    if (priorityDelta !== 0) {
+      return priorityDelta;
+    }
+
+    // Same ordering priority (e.g. same batch group): keep the group contiguous,
+    // strongest member first, then a stable name tiebreak.
+    return calculatePriority(right, now) - calculatePriority(left, now)
+      || left.taskName.localeCompare(right.taskName);
   };
 }
 
@@ -960,7 +990,8 @@ function reclaimWastedCapacity({
 
 function scheduleWindow({ tasks, blocks, planDate, now, dependencyEnds = new Map() }) {
   const capacity = totalMinutes(blocks);
-  const ordered = orderByDependencies(tasks, placementComparator(now));
+  const groupRep = batchRepresentativePriorities(tasks, now);
+  const ordered = orderByDependencies(tasks, placementComparator(now, groupRep));
   const fixedTasks = ordered.filter((task) => task.fixed && task.fixedStart && task.fixedEnd);
   const flexibleTasks = ordered.filter((task) => !fixedTasks.includes(task));
   const compressionCaps = new Map();

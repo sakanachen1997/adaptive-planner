@@ -219,3 +219,29 @@ test('createTask normalizes dependency task ids and rejects self dependencies', 
     dependencyTaskIds: ['write']
   }), /cannot depend on itself/);
 });
+
+test('行政工作 task type exists and carries a batchGroup for grouping', () => {
+  assert.ok(Object.hasOwn(TASK_TYPE_DEFAULTS, '行政工作'));
+  assert.equal(TASK_TYPE_DEFAULTS['行政工作'].batchGroup, '行政工作');
+
+  const admin = createTask({
+    taskName: '回邮件',
+    taskType: '行政工作',
+    desiredMinutes: 30,
+    minimumMinutes: 15,
+    importance: 3
+  });
+  assert.equal(admin.batchGroup, '行政工作');
+});
+
+test('non-batchable task types have a null batchGroup', () => {
+  assert.equal(TASK_TYPE_DEFAULTS['编码工作'].batchGroup, null);
+  const coding = createTask({
+    taskName: '写代码',
+    taskType: '编码工作',
+    desiredMinutes: 60,
+    minimumMinutes: 45,
+    importance: 4
+  });
+  assert.equal(coding.batchGroup, null);
+});
