@@ -264,8 +264,71 @@ export function calendarEventToPlanTask(event) {
   return task;
 }
 
+export function calendarScheduleFromTasks(tasks, planDate) {
+  const segments = tasks
+    .filter((task) => task.plannedStart && task.plannedEnd)
+    .map((task) => ({
+      taskId: task.taskId,
+      taskName: task.taskName,
+      status: task.status,
+      start: normalizeDateTime(task.plannedStart),
+      end: normalizeDateTime(task.plannedEnd),
+      allocatedMinutes: minutesBetween(task.plannedStart, task.plannedEnd),
+      segmentId: task.segmentId ?? null,
+      calendarEventId: task.calendarEventId ?? null
+    }))
+    .filter((segment) => segment.end > segment.start)
+    .sort((left, right) => left.start.localeCompare(right.start) || left.end.localeCompare(right.end));
+
+  return {
+    status: 'calendar',
+    planDate,
+    segments
+  };
+}
+
 function stableSegmentId(taskId, index) {
   return `${taskId}_segment_${index + 1}`;
+}
+
+function syncSegmentIdsFor(segments) {
+  const result = new Map();
+  const usedIds = new Set();
+  const missingByTaskId = new Map();
+
+  for (const segment of segments) {
+    const explicitId = String(segment.segmentId ?? '').trim();
+    if (!explicitId) {
+      missingByTaskId.set(
+        segment.taskId,
+        [...(missingByTaskId.get(segment.taskId) ?? []), segment]
+      );
+      continue;
+    }
+    if (usedIds.has(explicitId)) {
+      throw new Error(`duplicate segmentId in sync plan: ${explicitId}`);
+    }
+    usedIds.add(explicitId);
+    result.set(segment, explicitId);
+  }
+
+  for (const [taskId, taskSegments] of missingByTaskId) {
+    let index = 0;
+    for (const segment of taskSegments.sort((left, right) => (
+      left.start.localeCompare(right.start) || left.end.localeCompare(right.end)
+    ))) {
+      let segmentId = stableSegmentId(taskId, index);
+      while (usedIds.has(segmentId)) {
+        index += 1;
+        segmentId = stableSegmentId(taskId, index);
+      }
+      index += 1;
+      usedIds.add(segmentId);
+      result.set(segment, segmentId);
+    }
+  }
+
+  return result;
 }
 
 function legacySegmentIdFor(segment) {
@@ -367,10 +430,6 @@ function existingPlanLookup(existingPlanTasks) {
   }
 
   return { bySegmentId, byTaskId };
-}
-
-function findExistingByEventId(existingPlanTasks, eventId) {
-  return existingPlanTasks.find((task) => task.calendarEventId === eventId) ?? null;
 }
 
 function unusedExistingForTask(byTaskId, taskId, usedEventIds) {
@@ -838,7 +897,10 @@ export function buildDebugReport({
   availableBlocks = [],
   protectedBlocks = [],
   tasks = [],
-  schedule = null
+  schedule = null,
+  calendarSchedule = null,
+  draftSchedule = null,
+  displayMode = null
 }) {
   return JSON.stringify(
     {
@@ -850,7 +912,10 @@ export function buildDebugReport({
       availableBlocks,
       protectedBlocks,
       tasks,
-      schedule
+      schedule,
+      calendarSchedule,
+      draftSchedule,
+      displayMode
     },
     null,
     2
@@ -1078,8 +1143,23 @@ export function resetCalendarStateForDateChange(currentState, newDate) {
     ...currentState,
     planDate: newDate,
     calendarEvents: [],
-    schedule: null,
+    calendarSchedule: null,
+    draftSchedule: null,
     lastSyncOperations: emptySyncOperations()
+  };
+}
+
+export function stateAfterCalendarRead(currentState, calendarEvents) {
+  const events = [...calendarEvents];
+  const calendarTasks = events.map(calendarEventToPlanTask).filter(Boolean);
+
+  return {
+    ...currentState,
+    calendarEvents: events,
+    calendarSchedule: calendarScheduleFromTasks(calendarTasks, currentState.planDate),
+    draftSchedule: null,
+    lastSyncOperations: emptySyncOperations(),
+    selectedTimelineItemId: null
   };
 }
 
@@ -1100,8 +1180,8 @@ export function buildSyncOperations({
     .filter((segment) => segment.status === TASK_STATUSES.SCHEDULED);
   const completedSegments = (schedule.segments ?? [])
     .filter((segment) => segment.status === TASK_STATUSES.COMPLETED);
+  const syncSegmentIds = syncSegmentIdsFor([...completedSegments, ...scheduledSegments]);
   const candidatesByTaskId = taskCandidatesByTaskId(tasks);
-  const scheduledSegmentIndexes = indexesForScheduledSegments(scheduledSegments);
   const scheduledCountsByTask = countsForSegmentsByTask(scheduledSegments);
   const allExistingPlanTasks = existingPlanTasksFrom({
     existingPlanTasks,
@@ -1117,10 +1197,7 @@ export function buildSyncOperations({
       continue;
     }
 
-    const existing = findExistingByEventId(allExistingPlanTasks, task.calendarEventId);
-    const segmentId = task.segmentId
-      ?? existing?.segmentId
-      ?? stableSegmentId(segment.taskId, 0);
+    const segmentId = syncSegmentIds.get(segment);
     const completionTask = {
       ...task,
       actualStart: task.actualStart ?? segment.start,
@@ -1157,10 +1234,7 @@ export function buildSyncOperations({
       taskId: segment.taskId,
       taskName: segment.taskName
     };
-    const segmentIndex = scheduledSegmentIndexes.get(segment) ?? 0;
-    const segmentId = segment.segmentId
-      ?? identityTask?.segmentId
-      ?? stableSegmentId(segment.taskId, segmentIndex);
+    const segmentId = syncSegmentIds.get(segment);
     const legacySegmentId = legacySegmentIdFor(segment);
     const exactExisting = bySegmentId.get(segmentId)
       ?? bySegmentId.get(legacySegmentId);
@@ -1221,7 +1295,8 @@ function createState() {
     availableBlocks: settings.defaultBlocks
       .filter((block) => block.enabled)
       .map(blockFromSetting),
-    schedule: null,
+    calendarSchedule: null,
+    draftSchedule: null,
     lastSyncOperations: emptySyncOperations(),
     editingTaskKey: null,
     selectedTimelineItemId: null
@@ -1229,6 +1304,10 @@ function createState() {
 }
 
 let state = createState();
+
+function displayedSchedule() {
+  return state.draftSchedule ?? state.calendarSchedule;
+}
 
 function planTasksFromCalendar() {
   return state.calendarEvents
@@ -1483,7 +1562,7 @@ function renderConflictPanel() {
     return;
   }
 
-  if (!state.schedule || state.schedule.status !== 'conflict') {
+  if (!state.draftSchedule || state.draftSchedule.status !== 'conflict') {
     panel.className = 'hidden';
     panel.replaceChildren();
     return;
@@ -1493,13 +1572,13 @@ function renderConflictPanel() {
   clear(panel);
   appendText(panel, '计划冲突', 'strong');
 
-  for (const line of conflictSummaryLines(state.schedule.conflict)) {
+  for (const line of conflictSummaryLines(state.draftSchedule.conflict)) {
     appendText(panel, line, 'p');
   }
 
-  if (state.schedule.conflict.actions?.length) {
+  if (state.draftSchedule.conflict.actions?.length) {
     const list = document.createElement('ol');
-    for (const action of state.schedule.conflict.actions) {
+    for (const action of state.draftSchedule.conflict.actions) {
       appendText(list, action, 'li');
     }
     panel.append(list);
@@ -1515,7 +1594,7 @@ function appendEditButton(parent, task) {
 }
 
 function renderConflictEditableTasks(root, tasks) {
-  const editableTasks = editableTasksForSchedule(state.schedule, tasks);
+  const editableTasks = editableTasksForSchedule(state.draftSchedule, tasks);
 
   if (editableTasks.length === 0) {
     return;
@@ -1620,23 +1699,25 @@ function renderTimelineView(parent, items, bounds, now = null) {
 }
 
 function renderScheduleSummary(parent) {
-  if (!state.schedule) {
+  const schedule = displayedSchedule();
+
+  if (!schedule) {
     appendText(parent, DEFAULT_MESSAGE, 'p');
     return;
   }
 
-  appendText(parent, '计划概览', 'strong');
+  appendText(parent, state.draftSchedule ? '待发布草案概览' : 'Google Calendar 已发布计划', 'strong');
 
-  if (state.schedule.durationPlan) {
+  if (schedule.durationPlan) {
     appendText(
       parent,
-      `想要总时长 ${state.schedule.durationPlan.desiredMinutes} 分钟，最小总时长 ${state.schedule.durationPlan.minimumMinutes} 分钟，可用时间 ${state.schedule.durationPlan.availableMinutes} 分钟。`,
+      `想要总时长 ${schedule.durationPlan.desiredMinutes} 分钟，最小总时长 ${schedule.durationPlan.minimumMinutes} 分钟，可用时间 ${schedule.durationPlan.availableMinutes} 分钟。`,
       'p'
     ).className = 'muted';
     return;
   }
 
-  if (state.schedule.status === 'conflict') {
+  if (schedule.status === 'conflict') {
     appendText(parent, '当前计划存在冲突。请查看上方冲突说明，或编辑下方未完成任务。', 'p').className = 'muted';
     return;
   }
@@ -1716,7 +1797,7 @@ function renderCompletedTasks(root, tasks) {
 function renderTimelineTaskDetail(parent, item) {
   const task = item.task;
   const segment = item.segment;
-  const actualDuration = actualDurationForTask(state.schedule, segment.taskId);
+  const actualDuration = actualDurationForTask(displayedSchedule(), segment.taskId);
   const deadlineText = task ? deadlineLabel(task.deadline, state.planDate) : '';
 
   appendText(parent, item.title, 'strong');
@@ -1782,8 +1863,9 @@ function renderTimelineDetail(parent, selectedItem) {
 
 function renderSchedule() {
   const root = element('scheduleList');
-  const currentTasks = allTasks();
+  const currentTasks = state.draftSchedule ? allTasks() : planTasksFromCalendar();
   const protectedBlocks = protectedBlocksFromCalendar();
+  const schedule = displayedSchedule();
 
   renderConflictPanel();
 
@@ -1793,7 +1875,7 @@ function renderSchedule() {
 
   clear(root);
 
-  if (!state.schedule) {
+  if (!schedule) {
     appendText(root, DEFAULT_MESSAGE, 'p');
     renderSyncPreview();
     return;
@@ -1801,7 +1883,7 @@ function renderSchedule() {
 
   const now = localNowString();
   const items = buildTimelineItems({
-    schedule: state.schedule,
+    schedule,
     protectedBlocks,
     tasks: currentTasks,
     now,
@@ -1833,20 +1915,22 @@ function renderSyncPreview() {
     return;
   }
 
-  if (!state.schedule) {
-    target.textContent = '还没有可发布的计划。';
+  if (!state.draftSchedule) {
+    target.textContent = state.calendarSchedule
+      ? '当前显示 Google Calendar 已发布计划。点击“调度”生成待发布草案。'
+      : '还没有可发布的计划。';
     target.className = 'muted';
     return;
   }
 
-  if (state.schedule.status === 'conflict') {
+  if (state.draftSchedule.status === 'conflict') {
     target.textContent = '解决冲突后才能发布到 Google Calendar。';
     target.className = 'schedule-item error';
     return;
   }
 
   state.lastSyncOperations = buildSyncOperations({
-    schedule: state.schedule,
+    schedule: state.draftSchedule,
     tasks: allTasks(),
     existingPlanTasks: planTasksFromCalendar(),
     planDate: state.planDate
@@ -1859,7 +1943,7 @@ function renderSyncPreview() {
 function recalculate() {
   const selectedDependencyTaskIds = selectedDependencyTaskIdsFromForm();
   const taskRecords = allTasks();
-  state.schedule = scheduleDay({
+  state.draftSchedule = scheduleDay({
     planDate: state.planDate,
     now: localNowString(),
     scheduleStart: currentScheduleStart(),
@@ -1912,22 +1996,24 @@ async function loadCalendar() {
   const timeMax = toCalendarQueryDateTime(nextLocalDate(state.planDate), '00:00:00');
 
   try {
-    state.calendarEvents = await listPrimaryEvents(timeMin, timeMax);
-    showMessage(`已读取并显示 ${state.calendarEvents.length} 个日历事件。此操作没有写入 Google Calendar。`);
-    recalculate();
+    const calendarEvents = await listPrimaryEvents(timeMin, timeMax);
+    state = stateAfterCalendarRead(state, calendarEvents);
+    renderSchedule();
+    renderDependencyOptions();
+    showMessage(`已读取并显示 ${state.calendarEvents.length} 个日历事件。当前显示的是 Google Calendar 已发布状态；此操作没有重新调度或写入日历。`);
   } catch (error) {
     showMessage(`读取日历失败：${error.message}`, true);
   }
 }
 
 async function syncSchedule() {
-  if (!state.schedule || state.schedule.status === 'conflict') {
+  if (!state.draftSchedule || state.draftSchedule.status === 'conflict') {
     showMessage('没有可发布的计划，或当前计划仍有冲突。', true);
     return;
   }
 
   const operations = buildSyncOperations({
-    schedule: state.schedule,
+    schedule: state.draftSchedule,
     tasks: allTasks(),
     existingPlanTasks: planTasksFromCalendar(),
     planDate: state.planDate
@@ -2274,7 +2360,10 @@ function currentDebugReport() {
     availableBlocks: concreteAvailableBlocks(),
     protectedBlocks: protectedBlocksFromCalendar(),
     tasks: allTasks(),
-    schedule: state.schedule
+    schedule: displayedSchedule(),
+    calendarSchedule: state.calendarSchedule,
+    draftSchedule: state.draftSchedule,
+    displayMode: state.draftSchedule ? 'draft' : state.calendarSchedule ? 'calendar' : 'empty'
   });
 }
 

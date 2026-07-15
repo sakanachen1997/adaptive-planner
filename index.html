@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Adaptive Planner</title>
-    <link rel="stylesheet" href="./src/styles.css?v=20260715-stable-now" />
+    <link rel="stylesheet" href="./src/styles.css?v=20260715-stable-now-2" />
     <script src="https://accounts.google.com/gsi/client" async defer></script>
   </head>
   <body>
@@ -34,7 +34,7 @@
           <input id="scheduleFromNowToggle" type="checkbox" />
           <span>从当前时间调度（完成后把未完成任务重排到现在之后）</span>
         </label>
-        <p class="muted">只读取 Google Calendar，不会写入、覆盖或删除日历事件。普通日历事件只作为受保护的不可用时间显示。</p>
+        <p class="muted">“读取并显示日历”只显示 Google Calendar 已发布状态，不会重新调度；点击“调度”才会生成待发布草案。普通日历事件只作为受保护的不可用时间显示。</p>
         <div id="availableBlocks"></div>
         <button id="addBlockButton" type="button">添加可用时间块</button>
       </section>
@@ -131,6 +131,6 @@
       </section>
     </main>
 
-    <script type="module" src="./src/main.js?v=20260715-stable-now"></script>
+    <script type="module" src="./src/main.js?v=20260715-stable-now-2"></script>
   </body>
 </html>

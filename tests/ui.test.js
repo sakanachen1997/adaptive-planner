@@ -7,6 +7,7 @@ import {
   buildSyncOperations,
   calendarEventToPlanTask,
   calendarEventToProtectedBlock,
+  calendarScheduleFromTasks,
   actualDurationForTask,
   buildDebugReport,
   buildTimelineItems,
@@ -28,6 +29,7 @@ import {
   logicalTasksForSchedule,
   resetCalendarStateForDateChange,
   selectTaskForCompletion,
+  stateAfterCalendarRead,
   timelineBounds,
   upsertLocalTask
 } from '../src/ui.js';
@@ -669,6 +671,70 @@ test('plan calendar events become tasks and retain their calendar event id', () 
   });
 });
 
+test('calendar readback builds a committed schedule from Calendar event times', () => {
+  const schedule = calendarScheduleFromTasks([{
+    taskId: 'calendar-task',
+    taskName: 'Calendar task',
+    status: TASK_STATUSES.SCHEDULED,
+    plannedStart: '2026-07-15T15:14:04',
+    plannedEnd: '2026-07-15T15:44:04',
+    segmentId: 'calendar-task_segment_1',
+    calendarEventId: 'event-1'
+  }], '2026-07-15');
+
+  assert.equal(schedule.status, 'calendar');
+  assert.deepEqual(schedule.segments, [{
+    taskId: 'calendar-task',
+    taskName: 'Calendar task',
+    status: TASK_STATUSES.SCHEDULED,
+    start: '2026-07-15T15:14:04',
+    end: '2026-07-15T15:44:04',
+    allocatedMinutes: 30,
+    segmentId: 'calendar-task_segment_1',
+    calendarEventId: 'event-1'
+  }]);
+});
+
+test('calendar readback replaces a draft with the committed Calendar snapshot without rescheduling', () => {
+  const metadata = {
+    schemaVersion: 1,
+    app: APP_ID,
+    taskId: 'calendar-task',
+    taskName: 'Calendar task',
+    segmentId: 'calendar-task_segment_1',
+    status: TASK_STATUSES.SCHEDULED,
+    fixed: false
+  };
+  const nextState = stateAfterCalendarRead({
+    planDate: '2026-07-15',
+    calendarEvents: [],
+    calendarSchedule: null,
+    draftSchedule: {
+      status: 'ok',
+      segments: [{
+        taskId: 'calendar-task',
+        taskName: 'Calendar task',
+        status: TASK_STATUSES.SCHEDULED,
+        start: '2026-07-15T12:30:00',
+        end: '2026-07-15T12:45:00'
+      }]
+    },
+    selectedTimelineItemId: 'old-selection',
+    lastSyncOperations: { creates: [{}], updates: [{}], deletes: [{}] }
+  }, [{
+    id: 'event-1',
+    description: buildDescription('Created by planner', metadata),
+    start: { dateTime: '2026-07-15T15:14:04+02:00' },
+    end: { dateTime: '2026-07-15T15:44:04+02:00' }
+  }]);
+
+  assert.equal(nextState.draftSchedule, null);
+  assert.equal(nextState.calendarSchedule.segments[0].start, '2026-07-15T15:14:04');
+  assert.equal(nextState.calendarSchedule.segments[0].end, '2026-07-15T15:44:04');
+  assert.equal(nextState.selectedTimelineItemId, null);
+  assert.deepEqual(nextState.lastSyncOperations, { creates: [], updates: [], deletes: [] });
+});
+
 test('calendar readback keeps non-user-fixed scheduled Plan task flexible', () => {
   const task = calendarEventToPlanTask({
     id: 'event-flexible',
@@ -1280,6 +1346,81 @@ test('split reschedule with changed times updates existing same-task Plan events
   assert.deepEqual(operations.deletes, []);
 });
 
+test('splitting one existing Calendar event creates distinct canonical segment ids', () => {
+  const task = {
+    taskId: 'one-to-two',
+    taskName: 'One to two',
+    status: TASK_STATUSES.SCHEDULED,
+    segmentId: 'one-to-two_segment_1',
+    calendarEventId: 'event-existing',
+    plannedStart: '2026-07-15T15:14:00',
+    plannedEnd: '2026-07-15T15:44:00'
+  };
+  const operations = buildSyncOperations({
+    schedule: {
+      status: 'ok',
+      segments: [
+        {
+          taskId: task.taskId,
+          taskName: task.taskName,
+          status: TASK_STATUSES.SCHEDULED,
+          start: '2026-07-15T12:30:00',
+          end: '2026-07-15T12:45:00'
+        },
+        {
+          taskId: task.taskId,
+          taskName: task.taskName,
+          status: TASK_STATUSES.SCHEDULED,
+          start: '2026-07-15T15:34:00',
+          end: '2026-07-15T15:49:00'
+        }
+      ]
+    },
+    tasks: [task],
+    existingPlanTasks: [task],
+    planDate: '2026-07-15'
+  });
+  const writtenMetadata = [...operations.updates, ...operations.creates]
+    .map((operation) => extractPlanMetadata(operation.description))
+    .sort((left, right) => left.segmentId.localeCompare(right.segmentId));
+
+  assert.equal(operations.updates.length, 1);
+  assert.equal(operations.updates[0].eventId, 'event-existing');
+  assert.equal(operations.creates.length, 1);
+  assert.deepEqual(writtenMetadata.map((metadata) => metadata.segmentId), [
+    'one-to-two_segment_1',
+    'one-to-two_segment_2'
+  ]);
+});
+
+test('sync crashes on duplicate explicit segment identities', () => {
+  assert.throws(() => buildSyncOperations({
+    schedule: {
+      status: 'ok',
+      segments: [
+        {
+          taskId: 'duplicate-sync-id',
+          taskName: 'Duplicate',
+          status: TASK_STATUSES.SCHEDULED,
+          start: '2026-07-15T09:00:00',
+          end: '2026-07-15T09:30:00',
+          segmentId: 'duplicate-segment'
+        },
+        {
+          taskId: 'duplicate-sync-id',
+          taskName: 'Duplicate',
+          status: TASK_STATUSES.SCHEDULED,
+          start: '2026-07-15T15:00:00',
+          end: '2026-07-15T15:30:00',
+          segmentId: 'duplicate-segment'
+        }
+      ]
+    },
+    tasks: [{ taskId: 'duplicate-sync-id', taskName: 'Duplicate' }],
+    planDate: '2026-07-15'
+  }), /duplicate segmentId in sync plan/);
+});
+
 test('stale unmatched existing Plan event appears in deletes', () => {
   const operations = buildSyncOperations({
     schedule: {
@@ -1430,7 +1571,8 @@ test('date change clears loaded calendar events but keeps local tasks', () => {
     planDate: '2026-07-06',
     calendarEvents: [{ id: 'old-date-event' }],
     tasks: [{ taskId: 'local-task', taskName: 'Local task' }],
-    schedule: { status: 'ok', segments: [] },
+    calendarSchedule: { status: 'calendar', segments: [] },
+    draftSchedule: { status: 'ok', segments: [] },
     lastSyncOperations: {
       creates: [{ eventId: 'create' }],
       updates: [{ eventId: 'update' }],
@@ -1442,7 +1584,8 @@ test('date change clears loaded calendar events but keeps local tasks', () => {
     ...currentState,
     planDate: '2026-07-07',
     calendarEvents: [],
-    schedule: null,
+    calendarSchedule: null,
+    draftSchedule: null,
     lastSyncOperations: {
       creates: [],
       updates: [],
