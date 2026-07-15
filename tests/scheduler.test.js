@@ -882,6 +882,108 @@ test('task with a same-day deadline finishes before the deadline even when a lat
   assert.ok(segments.every((segment) => segment.end <= `${PLAN_DATE}T12:00:00`));
 });
 
+test('an overdue deadline reports a deadline_in_past conflict instead of scheduling', () => {
+  const result = scheduleDay({
+    planDate: PLAN_DATE,
+    now: NOW,
+    availableBlocks: [block('09:00', '12:00', CONTEXTS.ANY)],
+    protectedBlocks: [],
+    tasks: [
+      task({ taskName: '逾期报告', taskType: '自定义', desiredMinutes: 60, minimumMinutes: 30, importance: 3, deadline: `${PLAN_DATE}T07:00:00` }),
+      task({ taskName: '正常任务', taskType: '自定义', desiredMinutes: 60, minimumMinutes: 30, importance: 3 })
+    ]
+  });
+
+  assert.equal(result.status, 'conflict');
+  assert.equal(result.conflict.kind, 'deadline_in_past');
+  assert.equal(result.conflict.deadlineViolations.length, 1);
+  assert.equal(result.conflict.deadlineViolations[0].taskName, '逾期报告');
+  assert.equal(result.conflict.deadlineViolations[0].deadline, `${PLAN_DATE}T07:00:00`);
+});
+
+test('a deadline still in the future is not treated as overdue', () => {
+  const result = scheduleDay({
+    planDate: PLAN_DATE,
+    now: NOW,
+    availableBlocks: [block('09:00', '12:00', CONTEXTS.ANY)],
+    protectedBlocks: [],
+    tasks: [
+      task({ taskName: '今日稍后', taskType: '自定义', desiredMinutes: 60, minimumMinutes: 30, importance: 3, deadline: `${PLAN_DATE}T11:00:00` })
+    ]
+  });
+
+  assert.notEqual(result.conflict?.kind, 'deadline_in_past');
+  assert.equal(result.status, 'ok');
+});
+
+test('placement failure from a context mismatch is diagnosed as no_compatible_context', () => {
+  const result = scheduleDay({
+    planDate: PLAN_DATE,
+    now: NOW,
+    availableBlocks: [block('09:00', '10:00', CONTEXTS.WORK)],
+    protectedBlocks: [],
+    tasks: [
+      task({ taskName: '运动健身', taskType: '运动健身', desiredMinutes: 30, minimumMinutes: 30, importance: 4 })
+    ]
+  });
+
+  assert.equal(result.conflict.kind, 'placement_failure');
+  assert.equal(result.conflict.belowMinimum[0].reason, 'no_compatible_context');
+  assert.equal(result.conflict.belowMinimum[0].executionContext, CONTEXTS.HOME);
+});
+
+test('placement failure from an unreachable deadline is diagnosed as deadline_too_tight', () => {
+  const result = scheduleDay({
+    planDate: PLAN_DATE,
+    now: NOW,
+    availableBlocks: [block('14:00', '18:00', CONTEXTS.ANY)],
+    protectedBlocks: [],
+    tasks: [
+      task({ taskName: '买菜', taskType: '生活杂务', desiredMinutes: 60, minimumMinutes: 30, importance: 3, deadline: `${PLAN_DATE}T12:00:00` })
+    ]
+  });
+
+  assert.equal(result.conflict.kind, 'placement_failure');
+  assert.equal(result.conflict.belowMinimum[0].reason, 'deadline_too_tight');
+  assert.equal(result.conflict.belowMinimum[0].deadline, `${PLAN_DATE}T12:00:00`);
+});
+
+test('two overlapping fixed tasks are diagnosed as fixed_overlap naming the other task', () => {
+  const result = scheduleDay({
+    planDate: PLAN_DATE,
+    now: NOW,
+    availableBlocks: [block('08:00', '12:00', CONTEXTS.ANY)],
+    protectedBlocks: [],
+    tasks: [
+      task({ taskName: '固定A', taskType: '自定义', desiredMinutes: 60, minimumMinutes: 60, importance: 3, fixed: true, fixedStart: '09:00', fixedEnd: '10:00' }),
+      task({ taskName: '固定B', taskType: '自定义', desiredMinutes: 60, minimumMinutes: 60, importance: 3, fixed: true, fixedStart: '09:30', fixedEnd: '10:30' })
+    ]
+  });
+
+  assert.equal(result.conflict.kind, 'placement_failure');
+  assert.equal(result.conflict.belowMinimum[0].reason, 'fixed_overlap');
+  assert.ok(result.conflict.belowMinimum[0].overlap, 'expected an overlap descriptor');
+  assert.equal(result.conflict.belowMinimum[0].overlap.kind, 'task');
+  assert.equal(result.conflict.belowMinimum[0].overlap.name, '固定A');
+});
+
+test('a fixed task overlapping a protected calendar event is diagnosed as fixed_overlap on the event', () => {
+  const result = scheduleDay({
+    planDate: PLAN_DATE,
+    now: NOW,
+    availableBlocks: [block('08:00', '12:00', CONTEXTS.ANY)],
+    protectedBlocks: [{ start: `${PLAN_DATE}T09:00:00`, end: `${PLAN_DATE}T10:00:00`, title: '客户会议' }],
+    tasks: [
+      task({ taskName: '固定任务', taskType: '自定义', desiredMinutes: 60, minimumMinutes: 60, importance: 3, fixed: true, fixedStart: '09:30', fixedEnd: '10:30' })
+    ]
+  });
+
+  assert.equal(result.conflict.kind, 'placement_failure');
+  assert.equal(result.conflict.belowMinimum[0].reason, 'fixed_overlap');
+  assert.equal(result.conflict.belowMinimum[0].overlap.kind, 'event');
+  assert.equal(result.conflict.belowMinimum[0].overlap.name, '客户会议');
+});
+
 test('deadline that cannot be met reports a placement failure naming the task', () => {
   const result = scheduleDay({
     planDate: PLAN_DATE,
@@ -1758,4 +1860,66 @@ test('legacy custom tasks migrate to a named custom block but not an any block',
 
   assert.equal(result.status, 'ok');
   assert.equal(scheduledSegments(result)[0].start, `${PLAN_DATE}T14:00:00`);
+});
+
+test('heavy multi-window floating day schedules quickly without exponential blowup', () => {
+  // Regression guard: gap-reclaim used to run inside the candidates^count
+  // assignment enumeration, so eight floating tasks over overlapping windows
+  // (each wanting hours) took ~13s and froze the tab. It must stay fast.
+  const tasks = Array.from({ length: 8 }, (_, index) => task({
+    taskName: `浮动任务${index}`,
+    desiredMinutes: 240,
+    minimumMinutes: 20,
+    importance: 3,
+    executionContext: CONTEXTS.ANY
+  }));
+
+  const start = Date.now();
+  const result = scheduleDay({
+    planDate: PLAN_DATE,
+    now: `${PLAN_DATE}T08:00:00`,
+    availableBlocks: [
+      block('08:00', '12:00', CONTEXTS.WORK),
+      block('09:00', '18:00', CONTEXTS.HOME)
+    ],
+    protectedBlocks: [],
+    tasks
+  });
+  const elapsed = Date.now() - start;
+
+  assert.notEqual(result.status, 'conflict');
+  assertNoOverlaps(scheduledSegments(result));
+  assert.ok(elapsed < 3000, `scheduling took ${elapsed}ms, expected well under 3000ms`);
+});
+
+test('many floating tasks over four candidate windows stay fast via greedy fallback', () => {
+  // candidates^count enumeration: 4 windows x 8 any-tasks = 4^8 = 65536
+  // assignments. The combination budget must divert this to the greedy path
+  // instead of enumerating (which took ~10s before the fix).
+  const tasks = Array.from({ length: 8 }, (_, index) => task({
+    taskName: `浮动${index}`,
+    desiredMinutes: 120,
+    minimumMinutes: 15,
+    importance: (index % 5) + 1,
+    executionContext: CONTEXTS.ANY
+  }));
+
+  const start = Date.now();
+  const result = scheduleDay({
+    planDate: PLAN_DATE,
+    now: `${PLAN_DATE}T06:00:00`,
+    availableBlocks: [
+      block('06:00', '12:00', CONTEXTS.WORK),
+      block('08:00', '18:00', CONTEXTS.HOME),
+      block('10:00', '20:00', 'custom:c1'),
+      block('12:00', '23:00', 'custom:c2')
+    ],
+    protectedBlocks: [],
+    tasks
+  });
+  const elapsed = Date.now() - start;
+
+  assert.notEqual(result.status, 'conflict');
+  assertNoOverlaps(scheduledSegments(result));
+  assert.ok(elapsed < 3000, `scheduling took ${elapsed}ms, expected well under 3000ms`);
 });

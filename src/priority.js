@@ -1,5 +1,4 @@
 import { CONTEXTS } from './models.js';
-import { minutesBetween, normalizeDateTime } from './time.js';
 
 const ENERGY_SCORE = Object.freeze({
   high: Object.freeze({
@@ -34,35 +33,12 @@ function intervalStartHour(interval) {
   return match ? Number(match[1]) : new Date(interval.start).getHours();
 }
 
-export function calculateUrgency(deadline, now = new Date()) {
-  if (!deadline) {
-    return 0;
-  }
-
-  const normalizedDeadline = normalizeDateTime(deadline);
-  const normalizedNow = normalizeDateTime(now);
-
-  if (normalizedDeadline <= normalizedNow) {
-    return 6;
-  }
-
-  const remainingHours = minutesBetween(normalizedNow, normalizedDeadline) / 60;
-
-  if (remainingHours <= 6) {
-    return 5;
-  }
-  if (remainingHours <= 24) {
-    return 4;
-  }
-  if (remainingHours <= 72) {
-    return 2;
-  }
-  return 1;
-}
-
-export function calculatePriority(task, now = new Date()) {
+// Urgency is a user-entered field (integer 0–6), fully decoupled from the
+// deadline. The deadline is now purely a hard scheduling constraint (tasks must
+// finish before it) and no longer feeds into priority.
+export function calculatePriority(task) {
   const importance = Number(task.importance ?? 0);
-  const urgency = calculateUrgency(task.deadline, now);
+  const urgency = Number(task.urgency ?? 0);
   const desiredMinutes = Math.max(1, Number(task.desiredMinutes ?? 1));
   const externalCommitment = Number(task.externalCommitment ?? 0);
 

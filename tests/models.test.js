@@ -43,12 +43,29 @@ test('createTask throws RangeError for invalid numeric fields', () => {
     { importance: Number.POSITIVE_INFINITY },
     { importance: 6 },
     { minSegmentMinutes: 0 },
-    { externalCommitment: -1 }
+    { externalCommitment: -1 },
+    { urgency: -1 },
+    { urgency: 7 },
+    { urgency: 2.5 }
   ];
 
   for (const override of invalidInputs) {
     assert.throws(() => createTask({ ...validInput, ...override }), RangeError);
   }
+});
+
+test('createTask accepts urgency at the boundaries and defaults it to zero', () => {
+  const base = {
+    taskName: '紧迫度边界',
+    taskType: '自定义',
+    desiredMinutes: 60,
+    minimumMinutes: 10,
+    importance: 3
+  };
+
+  assert.equal(createTask(base).urgency, 0);
+  assert.equal(createTask({ ...base, urgency: 0 }).urgency, 0);
+  assert.equal(createTask({ ...base, urgency: 6 }).urgency, 6);
 });
 
 test('createTask throws RangeError when minimumMinutes exceeds desiredMinutes', () => {

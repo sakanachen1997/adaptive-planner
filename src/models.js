@@ -163,6 +163,14 @@ function importanceNumber(value) {
   return number;
 }
 
+function urgencyNumber(value) {
+  const number = finiteNumber(value, 'urgency');
+  if (!Number.isInteger(number) || number < 0 || number > 6) {
+    throw new RangeError('urgency must be an integer between 0 and 6');
+  }
+  return number;
+}
+
 function nonNegativeNumber(value, fieldName) {
   const number = finiteNumber(value, fieldName);
   if (number < 0) {
@@ -216,6 +224,7 @@ export function createTask(input) {
     desiredMinutes,
     minimumMinutes,
     importance: importanceNumber(input.importance),
+    urgency: urgencyNumber(valueOrDefault(input, 'urgency', 0)),
     deadline: input.deadline || null,
     executionContext: input.executionContext ?? defaults.executionContext,
     fixed: Boolean(input.fixed),

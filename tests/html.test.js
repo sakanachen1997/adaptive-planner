@@ -11,6 +11,7 @@ test('task form fields have visible labels', () => {
     '想要时长',
     '最小时长',
     '重要性',
+    '紧迫度（0–6，手动填写，与截止时间无关）',
     '截止时间（任务须在此之前完成）',
     '执行场景',
     '精力需求',
@@ -44,6 +45,12 @@ test('task form exposes every task type preset field as editable controls', () =
   ]) {
     assert.match(html, new RegExp(`name="${fieldName}"`), `missing editable field: ${fieldName}`);
   }
+});
+
+test('task form exposes a manual urgency input bounded to 0-6', () => {
+  assert.match(html, /name="urgency"[^>]*type="number"/);
+  assert.match(html, /name="urgency"[^>]*min="0"/);
+  assert.match(html, /name="urgency"[^>]*max="6"/);
 });
 
 test('deadline field exposes a today shortcut button', () => {

@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Adaptive Planner</title>
-    <link rel="stylesheet" href="./src/styles.css?v=20260713-stable-now-4" />
+    <link rel="stylesheet" href="./src/styles.css?v=20260715-stable-now" />
     <script src="https://accounts.google.com/gsi/client" async defer></script>
   </head>
   <body>
@@ -61,6 +61,10 @@
           <label class="field">
             <span>重要性</span>
             <input name="importance" required type="number" min="1" max="5" value="3" />
+          </label>
+          <label class="field">
+            <span>紧迫度（0–6，手动填写，与截止时间无关）</span>
+            <input name="urgency" required type="number" min="0" max="6" value="0" />
           </label>
           <label class="field">
             <span>截止时间（任务须在此之前完成）</span>
@@ -127,6 +131,6 @@
       </section>
     </main>
 
-    <script type="module" src="./src/main.js?v=20260713-stable-now-4"></script>
+    <script type="module" src="./src/main.js?v=20260715-stable-now"></script>
   </body>
 </html>

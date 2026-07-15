@@ -688,7 +688,72 @@ function attemptPlacement({
   return { scheduled, unscheduled, failure: null, dependencyEnds };
 }
 
-function placementFailure(task, scheduledMinutes, plannedMinutes, candidateBlocks) {
+function findFixedOverlap(interval, failingTask, fixedTasks, protectedBlocks, planDate, now) {
+  for (const other of fixedTasks) {
+    if (other.taskId === failingTask.taskId) {
+      continue;
+    }
+    const otherInterval = fixedFutureInterval(other, planDate, now);
+    if (otherInterval && intervalsOverlap(interval, otherInterval)) {
+      return { kind: 'task', name: other.taskName, start: otherInterval.start, end: otherInterval.end };
+    }
+  }
+
+  for (const block of protectedBlocks) {
+    const other = { start: normalizeDateTime(block.start), end: normalizeDateTime(block.end) };
+    if (intervalMinutes(other.start, other.end) > 0 && intervalsOverlap(interval, other)) {
+      return { kind: 'event', name: block.title || block.summary || '日历事件', start: other.start, end: other.end };
+    }
+  }
+
+  return null;
+}
+
+// Explain WHY a task could not reach its minimum, so the conflict panel can
+// point at the specific cause (context mismatch / fixed-time overlap / deadline
+// too tight) instead of a generic "does not fit" message.
+function classifyPlacementFailure(task, { available, protectedBlocks, fixedTasks, planDate, now }) {
+  const contextBlocks = available.filter((block) => contextCompatible(task, block));
+
+  if (contextBlocks.length === 0) {
+    return { reason: 'no_compatible_context', executionContext: task.executionContext ?? CONTEXTS.ANY };
+  }
+
+  if (isUserFixed(task)) {
+    const interval = fixedFutureInterval(task, planDate, now);
+    if (interval) {
+      // `available` still holds another placed fixed task's slot (only protected
+      // events and completed work are subtracted before scheduling), so check
+      // overlap with the other fixed tasks explicitly rather than relying on
+      // containment alone.
+      const overlap = findFixedOverlap(interval, task, fixedTasks, protectedBlocks, planDate, now);
+      const contained = contextBlocks.some((block) => (
+        block.start <= interval.start && block.end >= interval.end
+      ));
+
+      if (overlap || !contained) {
+        return {
+          reason: 'fixed_overlap',
+          fixedStart: String(task.fixedStart ?? '').slice(0, 5),
+          fixedEnd: String(task.fixedEnd ?? '').slice(0, 5),
+          overlap
+        };
+      }
+    }
+  }
+
+  const deadline = validDateTime(task.deadline);
+  if (deadline) {
+    const usable = contextBlocks.reduce((sum, block) => sum + usableMinutes(task, block), 0);
+    if (usable < task.effectiveMinimumMinutes) {
+      return { reason: 'deadline_too_tight', deadline };
+    }
+  }
+
+  return { reason: 'insufficient_capacity' };
+}
+
+function placementFailure(task, scheduledMinutes, plannedMinutes, candidateBlocks, diagnosis = {}) {
   return {
     kind: 'placement_failure',
     belowMinimum: [{
@@ -697,7 +762,8 @@ function placementFailure(task, scheduledMinutes, plannedMinutes, candidateBlock
       minimumMinutes: task.effectiveMinimumMinutes,
       scheduledMinutes,
       plannedMinutes,
-      candidateBlocks
+      candidateBlocks,
+      ...diagnosis
     }]
   };
 }
@@ -902,6 +968,11 @@ function dependencyOrderIssues(tasks, segments) {
 }
 
 const FLOATING_ENUMERATION_LIMIT = 8;
+// Brute force enumerates candidates^count assignments, so gate on the actual
+// combination count — not just the task count. Eight floating tasks each
+// compatible with four windows is 4^8 = 65536 assignments, which would freeze
+// the tab. Beyond this budget we fall back to the priority-greedy assignment.
+const ASSIGNMENT_ENUMERATION_LIMIT = 2048;
 
 function placedMinutesByTask(segments) {
   const map = new Map();
@@ -933,9 +1004,19 @@ function reclaimWastedCapacity({
   let bestUnscheduled = unscheduled;
   let bestActual = placedMinutesByTask(bestScheduled);
   let bestTotal = totalPlacedMinutes(bestActual);
+  const windowCapacity = totalMinutes(blocks);
   const byPriority = priorityDescending(now);
 
   while (true) {
+    // Total placed can never exceed window capacity, so the most any single
+    // task can still grow is the free capacity. Targets above that can only
+    // redistribute time, never raise the total — skip them so a task wanting
+    // far more than fits doesn't trigger a fruitless per-minute walk.
+    const freeCapacity = windowCapacity - bestTotal;
+    if (freeCapacity <= 0) {
+      break;
+    }
+
     const candidates = tasks
       .filter((task) => !isUserFixed(task))
       .filter((task) => (bestActual.get(task.taskId) ?? 0) < task.effectiveDesiredMinutes)
@@ -944,8 +1025,9 @@ function reclaimWastedCapacity({
 
     for (const task of candidates) {
       const current = bestActual.get(task.taskId) ?? 0;
+      const maxTarget = Math.min(task.effectiveDesiredMinutes, current + freeCapacity);
 
-      for (let target = task.effectiveDesiredMinutes; target > current; target -= 1) {
+      for (let target = maxTarget; target > current; target -= 1) {
         const allocations = new Map(bestActual);
         allocations.set(task.taskId, target);
         const trial = attemptPlacement({
@@ -988,7 +1070,7 @@ function reclaimWastedCapacity({
   return { scheduled: bestScheduled, unscheduled: bestUnscheduled };
 }
 
-function scheduleWindow({ tasks, blocks, planDate, now, dependencyEnds = new Map() }) {
+function scheduleWindow({ tasks, blocks, planDate, now, dependencyEnds = new Map(), reclaim = true }) {
   const capacity = totalMinutes(blocks);
   const groupRep = batchRepresentativePriorities(tasks, now);
   const ordered = orderByDependencies(tasks, placementComparator(now, groupRep));
@@ -1040,17 +1122,19 @@ function scheduleWindow({ tasks, blocks, planDate, now, dependencyEnds = new Map
     }
   }
 
-  const reclaimed = reclaimWastedCapacity({
-    fixedTasks,
-    flexibleTasks,
-    tasks,
-    blocks,
-    planDate,
-    now,
-    dependencyEnds,
-    scheduled: attempt.scheduled,
-    unscheduled: attempt.unscheduled
-  });
+  const reclaimed = reclaim
+    ? reclaimWastedCapacity({
+        fixedTasks,
+        flexibleTasks,
+        tasks,
+        blocks,
+        planDate,
+        now,
+        dependencyEnds,
+        scheduled: attempt.scheduled,
+        unscheduled: attempt.unscheduled
+      })
+    : { scheduled: attempt.scheduled, unscheduled: attempt.unscheduled };
 
   const placedByTask = placedMinutesByTask(reclaimed.scheduled);
   const compression = tasks.reduce((sum, task) => (
@@ -1166,7 +1250,7 @@ function orderedContextsForDependencies(tasksByContext, fallbackOrder) {
   return ordered.length === fallbackOrder.length ? ordered : fallbackOrder;
 }
 
-function evaluateAssignment(assignment, ctx) {
+function evaluateAssignment(assignment, ctx, { reclaim = true } = {}) {
   // Windows are scheduled in sequence over a shared remaining-time pool so that
   // blocks of different contexts that overlap in wall-clock time are never
   // double-booked. For time-disjoint windows (the common case) this is
@@ -1192,7 +1276,8 @@ function evaluateAssignment(assignment, ctx) {
       blocks,
       planDate: ctx.planDate,
       now: ctx.now,
-      dependencyEnds
+      dependencyEnds,
+      reclaim
     });
     perWindow.set(context, result);
     remaining = subtractIntervals(remaining, result.scheduled);
@@ -1203,7 +1288,7 @@ function evaluateAssignment(assignment, ctx) {
   const totalCompression = [...perWindow.values()].reduce((sum, w) => (
     sum + (w.failure ? 0 : w.compression)
   ), 0);
-  return { perWindow, conflicts, totalCompression };
+  return { perWindow, conflicts, totalCompression, assignment };
 }
 
 function betterEvaluation(current, candidate) {
@@ -1238,7 +1323,10 @@ function bruteForceBest(ctx, floating) {
       n = Math.floor(n / item.candidates.length);
       return idx;
     });
-    best = betterEvaluation(best, evaluateAssignment(assignmentFromIndices(floating, indices), ctx));
+    best = betterEvaluation(
+      best,
+      evaluateAssignment(assignmentFromIndices(floating, indices), ctx, { reclaim: false })
+    );
   }
   return best;
 }
@@ -1255,7 +1343,7 @@ function greedyBest(ctx, floating) {
     for (const context of item.candidates) {
       const trial = new Map(assignment);
       trial.set(context, [...(assignment.get(context) ?? []), item.task]);
-      const evaluation = evaluateAssignment(trial, ctx);
+      const evaluation = evaluateAssignment(trial, ctx, { reclaim: false });
       if (betterEvaluation(bestEval, evaluation) === evaluation) {
         bestEval = evaluation;
         bestContext = context;
@@ -1263,16 +1351,28 @@ function greedyBest(ctx, floating) {
     }
     assignment.set(bestContext, [...(assignment.get(bestContext) ?? []), item.task]);
   }
-  return evaluateAssignment(assignment, ctx);
+  return evaluateAssignment(assignment, ctx, { reclaim: false });
 }
 
+// Enumerate assignments cheaply (no gap-reclaim) to pick the one with the
+// fewest conflicts and least baseline compression, then reclaim wasted gaps
+// only once on the winner. Reclaim is expensive (per-minute re-placement), so
+// running it inside the 2^n enumeration used to blow up wall-clock time.
 function selectBestAssignment(ctx, floating) {
-  if (floating.length === 0) {
-    return evaluateAssignment(new Map(), ctx);
+  const combinations = floating.reduce((product, item) => product * item.candidates.length, 1);
+  const canEnumerate = floating.length <= FLOATING_ENUMERATION_LIMIT
+    && combinations <= ASSIGNMENT_ENUMERATION_LIMIT;
+  const best = floating.length === 0
+    ? evaluateAssignment(new Map(), ctx, { reclaim: false })
+    : canEnumerate
+      ? bruteForceBest(ctx, floating)
+      : greedyBest(ctx, floating);
+
+  if (best.conflicts.length > 0 || !best.assignment) {
+    return best;
   }
-  return floating.length <= FLOATING_ENUMERATION_LIMIT
-    ? bruteForceBest(ctx, floating)
-    : greedyBest(ctx, floating);
+
+  return evaluateAssignment(best.assignment, ctx, { reclaim: true });
 }
 
 export function scheduleDay({
@@ -1303,12 +1403,29 @@ export function scheduleDay({
   const deadlineViolations = active
     .map((task) => fixedDeadlineViolation(task, planDate))
     .filter(Boolean);
+  const currentMoment = normalizeDateTime(now);
+  const overdueDeadlines = active
+    .map((task) => {
+      const deadline = validDateTime(task.deadline);
+      return deadline && deadline < currentMoment
+        ? { taskId: task.taskId, taskName: task.taskName, deadline }
+        : null;
+    })
+    .filter(Boolean);
   const dependencyIssue = dependencyGraphIssue(tasks);
 
   if (dependencyIssue) {
     return conflictResult(planDate, completed, availableMinutes, requiredMinimumMinutes, {
       ...dependencyIssue,
       actions: ['修改任务的前置任务，消除缺失引用或依赖环后重排']
+    });
+  }
+
+  if (overdueDeadlines.length > 0) {
+    return conflictResult(planDate, completed, availableMinutes, requiredMinimumMinutes, {
+      kind: 'deadline_in_past',
+      deadlineViolations: overdueDeadlines,
+      actions: ['修改或清除已过期任务的截止时间后重排']
     });
   }
 
@@ -1377,6 +1494,13 @@ export function scheduleDay({
 
   if (best.conflicts.length > 0) {
     const failure = best.conflicts[0];
+    const diagnosis = classifyPlacementFailure(failure.task, {
+      available,
+      protectedBlocks,
+      fixedTasks: active.filter((task) => isUserFixed(task)),
+      planDate,
+      now: schedulingNow
+    });
     return conflictResult(
       planDate,
       completed,
@@ -1386,7 +1510,8 @@ export function scheduleDay({
         failure.task,
         failure.scheduledMinutes,
         failure.plannedMinutes,
-        failure.candidateBlocks
+        failure.candidateBlocks,
+        diagnosis
       )
     );
   }

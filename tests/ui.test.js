@@ -313,6 +313,7 @@ test('formInputForTask preserves task fields as form-ready values', () => {
     desiredMinutes: 120,
     minimumMinutes: 45,
     importance: 4,
+    urgency: 3,
     deadline: '2026-07-07T18:30:00',
     executionContext: 'home',
     energyDemand: 'low',
@@ -331,6 +332,7 @@ test('formInputForTask preserves task fields as form-ready values', () => {
     desiredMinutes: '120',
     minimumMinutes: '45',
     importance: '4',
+    urgency: '3',
     deadline: '2026-07-07T18:30',
     executionContext: 'home',
     energyDemand: 'low',
@@ -488,6 +490,73 @@ test('placement failure conflict summary names the task that could not be placed
     '尝试过的时间块：09:00-09:30（work，可用 30 分钟）。',
     '总可用时间 828 分钟，全部任务最小共需 220 分钟。'
   ]);
+});
+
+test('deadline_in_past conflict summary states the deadline is overdue', () => {
+  const lines = conflictSummaryLines({
+    kind: 'deadline_in_past',
+    availableMinutes: 240,
+    requiredMinimumMinutes: 60,
+    deadlineViolations: [{ taskId: 't1', taskName: '逾期报告', deadline: '2026-07-14T07:00:00' }]
+  });
+
+  assert.deepEqual(lines, [
+    '任务「逾期报告」的截止时间 2026-07-14 07:00 已经过去。请修改或清除该任务的截止时间后重排。'
+  ]);
+});
+
+test('placement failure summary explains a context mismatch', () => {
+  const lines = conflictSummaryLines({
+    kind: 'placement_failure',
+    availableMinutes: 60,
+    requiredMinimumMinutes: 30,
+    belowMinimum: [{
+      taskName: '运动健身',
+      minimumMinutes: 30,
+      scheduledMinutes: 0,
+      reason: 'no_compatible_context',
+      executionContext: 'home'
+    }]
+  });
+
+  assert.equal(lines[0], '任务「运动健身」的执行场景（仅下班后）当天没有任何可用时间块。请增加对应场景的可用时间，或改用其它执行场景。');
+  assert.ok(!lines.some((line) => line.startsWith('尝试过的时间块')));
+});
+
+test('placement failure summary explains a fixed-time overlap and names the other task', () => {
+  const lines = conflictSummaryLines({
+    kind: 'placement_failure',
+    availableMinutes: 240,
+    requiredMinimumMinutes: 120,
+    belowMinimum: [{
+      taskName: '固定B',
+      minimumMinutes: 60,
+      scheduledMinutes: 0,
+      reason: 'fixed_overlap',
+      fixedStart: '09:30',
+      fixedEnd: '10:30',
+      overlap: { kind: 'task', name: '固定A', start: '2026-07-14T09:00:00', end: '2026-07-14T10:00:00' }
+    }]
+  });
+
+  assert.equal(lines[0], '任务「固定B」的固定时段 09:30-10:30 与固定任务「固定A」（09:00-10:00）重叠。请调整其中一个的时间。');
+});
+
+test('placement failure summary explains a deadline that is too tight', () => {
+  const lines = conflictSummaryLines({
+    kind: 'placement_failure',
+    availableMinutes: 240,
+    requiredMinimumMinutes: 30,
+    belowMinimum: [{
+      taskName: '买菜',
+      minimumMinutes: 30,
+      scheduledMinutes: 0,
+      reason: 'deadline_too_tight',
+      deadline: '2026-07-14T12:00:00'
+    }]
+  });
+
+  assert.equal(lines[0], '任务「买菜」的兼容时间块在截止时间 12:00 前不足最小 30 分钟（只能安排 0 分钟）。请把截止时间后移，或增加截止前的可用时间。');
 });
 
 test('minimum overflow conflict summary reports total available versus required minutes', () => {

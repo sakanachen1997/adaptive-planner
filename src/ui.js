@@ -475,6 +475,7 @@ export function formInputForTask(task) {
     desiredMinutes: String(task.desiredMinutes ?? ''),
     minimumMinutes: String(task.minimumMinutes ?? ''),
     importance: String(task.importance ?? ''),
+    urgency: String(task.urgency ?? 0),
     deadline: task.deadline ? normalizeDateTime(task.deadline).slice(0, 16) : '',
     executionContext: task.executionContext ?? defaults.executionContext,
     energyDemand: task.energyDemand ?? defaults.energyDemand,
@@ -538,6 +539,43 @@ function formatCandidateBlocks(blocks = []) {
   )).join('；');
 }
 
+const CONFLICT_CONTEXT_LABELS = Object.freeze({
+  any: '任意时间',
+  work: '仅工作时间',
+  home: '仅下班后'
+});
+
+function contextLabelForConflict(context) {
+  if (CONFLICT_CONTEXT_LABELS[context]) {
+    return CONFLICT_CONTEXT_LABELS[context];
+  }
+  return String(context ?? '').startsWith('custom') ? '自定义场景' : String(context ?? '');
+}
+
+function placementFailureLine(item) {
+  if (item.reason === 'no_compatible_context') {
+    return `任务「${item.taskName}」的执行场景（${contextLabelForConflict(item.executionContext)}）当天没有任何可用时间块。请增加对应场景的可用时间，或改用其它执行场景。`;
+  }
+
+  if (item.reason === 'fixed_overlap') {
+    const slot = `${item.fixedStart}-${item.fixedEnd}`;
+    if (item.overlap) {
+      const otherSlot = `${item.overlap.start.slice(11, 16)}-${item.overlap.end.slice(11, 16)}`;
+      const what = item.overlap.kind === 'event' ? '日历事件' : '固定任务';
+      return `任务「${item.taskName}」的固定时段 ${slot} 与${what}「${item.overlap.name}」（${otherSlot}）重叠。请调整其中一个的时间。`;
+    }
+    return `任务「${item.taskName}」的固定时段 ${slot} 不在任何可用时间块内。请调整固定时间或增加可用时间。`;
+  }
+
+  if (item.reason === 'deadline_too_tight') {
+    return `任务「${item.taskName}」的兼容时间块在截止时间 ${item.deadline.slice(11, 16)} 前不足最小 ${item.minimumMinutes} 分钟（只能安排 ${item.scheduledMinutes} 分钟）。请把截止时间后移，或增加截止前的可用时间。`;
+  }
+
+  return `任务「${item.taskName}」无法放入兼容的时间块：`
+    + (item.plannedMinutes ? `计划分配 ${item.plannedMinutes} 分钟，` : '')
+    + `最小需要 ${item.minimumMinutes} 分钟，只能安排 ${item.scheduledMinutes} 分钟。`;
+}
+
 export function conflictSummaryLines(conflict) {
   if (conflict.kind === 'missing_dependency') {
     return (conflict.dependencyIssues ?? []).map((item) => (
@@ -562,14 +600,21 @@ export function conflictSummaryLines(conflict) {
     ));
   }
 
+  if (conflict.kind === 'deadline_in_past' && conflict.deadlineViolations?.length) {
+    return conflict.deadlineViolations.map((item) => (
+      `任务「${item.taskName}」的截止时间 ${item.deadline.slice(0, 10)} ${item.deadline.slice(11, 16)} 已经过去。请修改或清除该任务的截止时间后重排。`
+    ));
+  }
+
   if (conflict.kind === 'placement_failure' && conflict.belowMinimum?.length) {
     return [
-      ...conflict.belowMinimum.flatMap((item) => [
-        `任务「${item.taskName}」无法放入兼容的时间块：`
-          + (item.plannedMinutes ? `计划分配 ${item.plannedMinutes} 分钟，` : '')
-          + `最小需要 ${item.minimumMinutes} 分钟，只能安排 ${item.scheduledMinutes} 分钟。`,
-        `尝试过的时间块：${formatCandidateBlocks(item.candidateBlocks)}。`
-      ]),
+      ...conflict.belowMinimum.flatMap((item) => {
+        const lines = [placementFailureLine(item)];
+        if (!item.reason || item.reason === 'insufficient_capacity') {
+          lines.push(`尝试过的时间块：${formatCandidateBlocks(item.candidateBlocks)}。`);
+        }
+        return lines;
+      }),
       `总可用时间 ${conflict.availableMinutes} 分钟，全部任务最小共需 ${conflict.requiredMinimumMinutes} 分钟。`
     ];
   }
@@ -1957,6 +2002,7 @@ export function taskInputFromFormData(data) {
     desiredMinutes,
     minimumMinutes,
     importance: data.get('importance'),
+    urgency: data.get('urgency'),
     deadline: data.get('deadline'),
     executionContext: data.get('executionContext'),
     energyDemand: data.get('energyDemand'),
@@ -2005,6 +2051,7 @@ function fillTaskForm(task) {
   form.elements.desiredMinutes.value = input.desiredMinutes;
   form.elements.minimumMinutes.value = input.minimumMinutes;
   form.elements.importance.value = input.importance;
+  form.elements.urgency.value = input.urgency;
   form.elements.deadline.value = input.deadline;
   form.elements.executionContext.value = input.executionContext;
   form.elements.energyDemand.value = input.energyDemand;

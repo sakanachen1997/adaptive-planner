@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { CONTEXTS, createTask } from '../src/models.js';
-import { calculatePriority, calculateUrgency, scorePlacement } from '../src/priority.js';
+import { calculatePriority, scorePlacement } from '../src/priority.js';
 
 function scoreTestTask(energyDemand) {
   return {
@@ -120,12 +120,63 @@ test('placement score covers every required slot energy and task energy matrix c
   }
 });
 
-test('urgency uses wall-clock minutes across DST start', () => {
-  assert.equal(calculateUrgency('2026-03-29T07:00:00', '2026-03-29T01:30:00'), 5);
+test('priority uses the manually entered urgency, not the deadline', () => {
+  const urgentNoDeadline = createTask({
+    taskName: '手动紧迫',
+    taskType: '自定义',
+    desiredMinutes: 30,
+    minimumMinutes: 30,
+    importance: 2,
+    urgency: 6
+  });
+  const relaxedNoDeadline = createTask({
+    taskName: '不紧迫',
+    taskType: '自定义',
+    desiredMinutes: 30,
+    minimumMinutes: 30,
+    importance: 2,
+    urgency: 0
+  });
+
+  assert.equal(
+    calculatePriority(urgentNoDeadline) - calculatePriority(relaxedNoDeadline),
+    36
+  );
 });
 
-test('urgency ignores offset suffixes for wall-clock bucket boundaries', () => {
-  assert.equal(calculateUrgency('2026-07-06T15:00:00', '2026-07-06T09:00:00+05:00'), 5);
+test('deadline distance no longer changes priority', () => {
+  const nearDeadline = createTask({
+    taskName: '近截止',
+    taskType: '自定义',
+    desiredMinutes: 30,
+    minimumMinutes: 30,
+    importance: 3,
+    urgency: 2,
+    deadline: '2026-07-06T10:00:00'
+  });
+  const farDeadline = createTask({
+    taskName: '远截止',
+    taskType: '自定义',
+    desiredMinutes: 30,
+    minimumMinutes: 30,
+    importance: 3,
+    urgency: 2,
+    deadline: '2026-12-31T23:59:00'
+  });
+
+  assert.equal(calculatePriority(nearDeadline), calculatePriority(farDeadline));
+});
+
+test('urgency defaults to zero when omitted', () => {
+  const task = createTask({
+    taskName: '默认紧迫度',
+    taskType: '自定义',
+    desiredMinutes: 30,
+    minimumMinutes: 30,
+    importance: 2
+  });
+
+  assert.equal(task.urgency, 0);
 });
 
 test('placement score rewards blocks matching the task order preference without penalizing others', () => {
