@@ -13,7 +13,7 @@ import {
 } from './metadata.js';
 import { scheduleDay } from './scheduler.js';
 import { calculatePriority } from './priority.js';
-import { combineDateAndTime, minutesBetween, normalizeDateTime } from './time.js';
+import { addMinutes, combineDateAndTime, minutesBetween, normalizeDateTime } from './time.js';
 import { loadSettings, saveSettings } from './storage.js';
 import {
   createPlanEvent,
@@ -521,6 +521,36 @@ export function uncompleteTaskInList(localTasks, task) {
     actualStart: null,
     actualEnd: null,
     localOverride: Boolean(task.calendarEventId)
+  });
+}
+
+function validActualDateTime(value) {
+  const normalized = normalizeDateTime(value);
+  const parsed = new Date(`${normalized}Z`);
+  return /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}$/.test(normalized)
+    && Number.isFinite(parsed.getTime())
+    && parsed.toISOString().slice(0, 19) === normalized
+    ? normalized
+    : null;
+}
+
+export function completeTaskInList(localTasks, task, { actualStart, actualEnd }) {
+  const start = validActualDateTime(actualStart);
+  const end = validActualDateTime(actualEnd);
+
+  if (!start || !end) {
+    throw new RangeError('实际开始和结束时间必须是有效日期时间');
+  }
+  if (end <= start) {
+    throw new RangeError('实际结束时间必须晚于实际开始时间');
+  }
+
+  return upsertLocalTask(localTasks, {
+    ...task,
+    status: TASK_STATUSES.COMPLETED,
+    actualStart: start,
+    actualEnd: end,
+    localOverride: Boolean(task.calendarEventId) || Boolean(task.localOverride)
   });
 }
 
@@ -1602,7 +1632,7 @@ function renderConflictEditableTasks(root, tasks) {
 
   const wrapper = document.createElement('div');
   wrapper.className = 'schedule-item';
-  appendText(wrapper, '当前未完成任务（优先级低的排在前，可编辑或删除后重排）', 'strong');
+  appendText(wrapper, '当前未完成任务（即使计划冲突，也可标记完成、编辑或删除后重排）', 'strong');
 
   for (const task of editableTasks) {
     const row = document.createElement('div');
@@ -1615,6 +1645,12 @@ function renderConflictEditableTasks(root, tasks) {
       'span'
     );
     appendEditButton(row, task);
+
+    const complete = document.createElement('button');
+    complete.type = 'button';
+    complete.textContent = '完成';
+    complete.dataset.completeConflictTaskKey = taskEditKey(task);
+    row.append(complete);
 
     const remove = document.createElement('button');
     remove.type = 'button';
@@ -1772,6 +1808,34 @@ function completedTaskTimeLabel(task) {
   return '已完成';
 }
 
+function appendActualTimeEditor(parent, task) {
+  const editor = document.createElement('div');
+  const startLabel = document.createElement('label');
+  const startInput = document.createElement('input');
+  const endLabel = document.createElement('label');
+  const endInput = document.createElement('input');
+  const save = document.createElement('button');
+
+  editor.className = 'actual-time-editor';
+  startInput.type = 'datetime-local';
+  startInput.name = 'actualStart';
+  startInput.required = true;
+  startInput.value = task.actualStart ? normalizeDateTime(task.actualStart).slice(0, 16) : '';
+  endInput.type = 'datetime-local';
+  endInput.name = 'actualEnd';
+  endInput.required = true;
+  endInput.value = task.actualEnd ? normalizeDateTime(task.actualEnd).slice(0, 16) : '';
+  save.type = 'button';
+  save.textContent = '保存实际时间并重排';
+  save.dataset.saveActualTimeKey = taskEditKey(task);
+  appendText(startLabel, '实际开始', 'span');
+  startLabel.append(startInput);
+  appendText(endLabel, '实际结束', 'span');
+  endLabel.append(endInput);
+  editor.append(startLabel, endLabel, save);
+  parent.append(editor);
+}
+
 function renderCompletedTasks(root, tasks) {
   const completedTasks = tasks.filter((task) => task.status === TASK_STATUSES.COMPLETED);
 
@@ -1781,14 +1845,18 @@ function renderCompletedTasks(root, tasks) {
 
   const wrapper = document.createElement('div');
   wrapper.className = 'schedule-item';
-  appendText(wrapper, '已完成（误点可恢复）', 'strong');
+  appendText(wrapper, '已完成（可修正实际时间，误点可恢复）', 'strong');
 
   for (const task of completedTasks) {
+    const record = document.createElement('div');
     const row = document.createElement('div');
     row.className = 'schedule-actions';
     appendText(row, `${task.taskName}：${completedTaskTimeLabel(task)}`, 'span');
     appendUncompleteButton(row, task);
-    wrapper.append(row);
+    record.className = 'completed-record';
+    record.append(row);
+    appendActualTimeEditor(record, task);
+    wrapper.append(record);
   }
 
   root.append(wrapper);
@@ -2237,6 +2305,34 @@ function submitTaskForm(event) {
   }
 }
 
+function defaultActualStart(task, suggestedStart, actualEnd) {
+  const candidates = [
+    suggestedStart,
+    task.actualStart,
+    task.plannedStart,
+    task.fixedStart ? fixedTimeOnDate(task.planDate ?? state.planDate, task.fixedStart) : null
+  ];
+
+  for (const candidate of candidates) {
+    const normalized = validActualDateTime(candidate);
+    if (normalized && normalized < actualEnd) {
+      return normalized;
+    }
+  }
+
+  return addMinutes(actualEnd, -1);
+}
+
+function markTaskCompleted(task, suggestedStart = null) {
+  const actualEnd = localNowString();
+  const actualStart = defaultActualStart(task, suggestedStart, actualEnd);
+
+  state.tasks = completeTaskInList(state.tasks, task, { actualStart, actualEnd });
+  recalculate();
+  showMessage('任务已标记完成。可在“已完成”列表修正实际开始/结束时间；保存后会按真实占用时间重新调度。');
+  return true;
+}
+
 function completeTask(taskId, segmentStart, {
   segmentEnd = null,
   segmentId = null,
@@ -2256,27 +2352,11 @@ function completeTask(taskId, segmentStart, {
     return false;
   }
 
-  let localTask = state.tasks.find((task) => (
-    calendarEventId
-      ? task.calendarEventId === calendarEventId
-      : segmentId
-        ? task.segmentId === segmentId
-        : task.taskId === taskId && !task.calendarEventId && !task.segmentId
-  ));
-
-  if (!localTask) {
-    localTask = { ...existing };
-    state.tasks.push(localTask);
-  }
-
-  localTask.calendarEventId = existing.calendarEventId ?? calendarEventId ?? localTask.calendarEventId ?? null;
-  localTask.segmentId = existing.segmentId ?? segmentId ?? localTask.segmentId ?? null;
-  localTask.status = TASK_STATUSES.COMPLETED;
-  localTask.actualStart = segmentStart;
-  localTask.actualEnd = localNowString();
-  recalculate();
-  showMessage('任务已标记完成。下次同步时不会再创建新的未完成计划块。');
-  return true;
+  return markTaskCompleted({
+    ...existing,
+    calendarEventId: existing.calendarEventId ?? calendarEventId ?? null,
+    segmentId: existing.segmentId ?? segmentId ?? null
+  }, segmentStart);
 }
 
 function handleAvailableBlockInput(event) {
@@ -2439,6 +2519,37 @@ function uncompleteTask(key) {
   showMessage('已恢复为未完成，已重新排入计划。');
 }
 
+function completeConflictTask(key) {
+  const task = findEditableTaskByKey(key);
+
+  if (!task) {
+    showMessage('找不到要完成的冲突任务。', true);
+    return;
+  }
+
+  markTaskCompleted(task, task.plannedStart);
+}
+
+function saveActualTimes(key, editor) {
+  const task = findEditableTaskByKey(key);
+
+  if (!task || task.status !== TASK_STATUSES.COMPLETED) {
+    showMessage('找不到要修正的已完成任务。', true);
+    return;
+  }
+
+  try {
+    state.tasks = completeTaskInList(state.tasks, task, {
+      actualStart: editor?.querySelector('input[name="actualStart"]')?.value,
+      actualEnd: editor?.querySelector('input[name="actualEnd"]')?.value
+    });
+    recalculate();
+    showMessage('实际完成时间已保存，并已按修正后的真实占用时间重新调度。');
+  } catch (error) {
+    showMessage(`保存实际完成时间失败：${error.message}`, true);
+  }
+}
+
 function handleScheduleClick(event) {
   const timelineItemId = event.target.dataset.timelineItemId
     ?? event.target.closest?.('[data-timeline-item-id]')?.dataset.timelineItemId;
@@ -2460,6 +2571,20 @@ function handleScheduleClick(event) {
 
   if (removeKey) {
     removeTask(removeKey);
+    return;
+  }
+
+  const completeConflictKey = event.target.dataset.completeConflictTaskKey;
+
+  if (completeConflictKey) {
+    completeConflictTask(completeConflictKey);
+    return;
+  }
+
+  const saveActualTimeKey = event.target.dataset.saveActualTimeKey;
+
+  if (saveActualTimeKey) {
+    saveActualTimes(saveActualTimeKey, event.target.closest('.actual-time-editor'));
     return;
   }
 

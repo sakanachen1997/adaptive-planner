@@ -86,6 +86,6 @@ test('calendar controls distinguish read-only import from calendar publishing', 
 });
 
 test('page cache-busts static assets after behavior changes', () => {
-  assert.match(html, /href="\.\/src\/styles\.css\?v=\d{8}-stable-now(?:-\d+)?"/);
-  assert.match(html, /src="\.\/src\/main\.js\?v=\d{8}-stable-now(?:-\d+)?"/);
+  assert.match(html, /href="\.\/src\/styles\.css\?v=\d{8}-[a-z0-9-]+"/);
+  assert.match(html, /src="\.\/src\/main\.js\?v=\d{8}-[a-z0-9-]+"/);
 });

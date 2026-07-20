@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { APP_ID, TASK_STATUSES } from '../src/models.js';
+import { APP_ID, CONTEXTS, TASK_STATUSES, createTask } from '../src/models.js';
 import { buildDescription, extractPlanMetadata } from '../src/metadata.js';
 import { scheduleDay } from '../src/scheduler.js';
 import {
@@ -18,6 +18,7 @@ import {
   dependencyCandidatesForTasks,
   executionContextOptionsForBlocks,
   contextKeyForBlock,
+  completeTaskInList,
   MAX_CUSTOM_BLOCKS,
   removeTaskForReschedule,
   resolveScheduleStart,
@@ -224,6 +225,75 @@ test('uncompleteTaskInList marks a calendar-backed task localOverride so readbac
   assert.equal(updated[0].calendarEventId, 'event-1');
   assert.equal(updated[0].actualStart, null);
   assert.equal(updated[0].actualEnd, null);
+});
+
+test('completeTaskInList validates and persists corrected actual times', () => {
+  const task = {
+    taskId: 'task-correct-time',
+    taskName: 'Correct time',
+    status: TASK_STATUSES.COMPLETED,
+    calendarEventId: 'event-correct-time',
+    actualStart: '2026-07-16T09:00:00',
+    actualEnd: '2026-07-16T11:00:00'
+  };
+  const updated = completeTaskInList([], task, {
+    actualStart: '2026-07-16T09:05',
+    actualEnd: '2026-07-16T10:10'
+  });
+
+  assert.equal(updated[0].status, TASK_STATUSES.COMPLETED);
+  assert.equal(updated[0].actualStart, '2026-07-16T09:05:00');
+  assert.equal(updated[0].actualEnd, '2026-07-16T10:10:00');
+  assert.equal(updated[0].localOverride, true);
+  assert.throws(() => completeTaskInList([], task, {
+    actualStart: '2026-07-16T10:10',
+    actualEnd: '2026-07-16T10:10'
+  }), /实际结束时间必须晚于实际开始时间/);
+  assert.throws(() => completeTaskInList([], task, {
+    actualStart: '2026-02-30T09:00',
+    actualEnd: '2026-02-30T10:00'
+  }), /必须是有效日期时间/);
+});
+
+test('correcting an overstated completion time releases capacity for later scheduling', () => {
+  const completed = {
+    taskId: 'completed-history',
+    taskName: 'Completed history',
+    status: TASK_STATUSES.COMPLETED,
+    actualStart: '2026-07-16T09:00:00',
+    actualEnd: '2026-07-16T11:00:00'
+  };
+  const remaining = createTask({
+    taskId: 'remaining-work',
+    taskName: 'Remaining work',
+    taskType: '自定义',
+    desiredMinutes: 120,
+    minimumMinutes: 60,
+    importance: 3,
+    executionContext: CONTEXTS.WORK
+  });
+  const schedule = (completedTask) => scheduleDay({
+    planDate: '2026-07-16',
+    now: '2026-07-16T11:30:00',
+    scheduleStart: '2026-07-16T00:00:00',
+    availableBlocks: [{
+      start: '2026-07-16T09:00:00',
+      end: '2026-07-16T12:00:00',
+      context: CONTEXTS.WORK
+    }],
+    protectedBlocks: [],
+    tasks: [completedTask, remaining]
+  });
+  const corrected = completeTaskInList([], completed, {
+    actualStart: '2026-07-16T09:00:00',
+    actualEnd: '2026-07-16T10:00:00'
+  })[0];
+  const before = schedule(completed);
+  const after = schedule(corrected);
+
+  assert.equal(actualDurationForTask(before, remaining.taskId).actualMinutes, 60);
+  assert.equal(actualDurationForTask(after, remaining.taskId).actualMinutes, 120);
+  assert.equal(after.segments.find((segment) => segment.taskId === remaining.taskId).start, '2026-07-16T10:00:00');
 });
 
 test('buildDebugReport serializes the full scheduling state as readable JSON', () => {

@@ -159,6 +159,33 @@ button {
   margin-top: 8px;
 }
 
+.completed-record + .completed-record {
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
+}
+
+.actual-time-editor {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(180px, 1fr)) auto;
+  gap: 8px;
+  align-items: end;
+  margin-top: 8px;
+}
+
+.actual-time-editor label {
+  display: grid;
+  gap: 4px;
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+
+@media (max-width: 760px) {
+  .actual-time-editor {
+    grid-template-columns: 1fr;
+  }
+}
+
 .schedule-item.error {
   color: var(--danger);
 }
