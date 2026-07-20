@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { APP_ID, CONTEXTS, TASK_STATUSES, createTask } from '../src/models.js';
 import { buildDescription, extractPlanMetadata } from '../src/metadata.js';
+import { buildDayAvailabilityMetadata, dayAvailabilityCalendarBody } from '../src/dayAvailability.js';
 import { scheduleDay } from '../src/scheduler.js';
 import {
   buildSyncOperations,
@@ -120,6 +121,15 @@ test('ordinary calendar events become protected blocks with local wall-clock tim
     summary: 'Doctor',
     calendarEventId: 'ordinary-1'
   });
+});
+
+test('day availability configuration events never become protected blocks', () => {
+  const event = {
+    id: 'availability-1',
+    ...dayAvailabilityCalendarBody(buildDayAvailabilityMetadata('2026-07-20', []))
+  };
+
+  assert.equal(calendarEventToProtectedBlock(event), null);
 });
 
 test('conflict schedules expose active tasks for editing', () => {
@@ -803,6 +813,51 @@ test('calendar readback replaces a draft with the committed Calendar snapshot wi
   assert.equal(nextState.calendarSchedule.segments[0].end, '2026-07-15T15:44:04');
   assert.equal(nextState.selectedTimelineItemId, null);
   assert.deepEqual(nextState.lastSyncOperations, { creates: [], updates: [], deletes: [] });
+});
+
+test('calendar readback replaces local blocks with the synced day availability', () => {
+  const remoteBlocks = [{
+    start: '10:15',
+    end: '16:30',
+    context: CONTEXTS.WORK,
+    enabled: true,
+    customName: '',
+    customContextId: null
+  }];
+  const availabilityEvent = {
+    ...dayAvailabilityCalendarBody(
+      buildDayAvailabilityMetadata('2026-07-20', remoteBlocks)
+    ),
+    id: 'availability-1',
+    etag: '"revision-1"'
+  };
+  const nextState = stateAfterCalendarRead({
+    planDate: '2026-07-20',
+    availableBlocks: [{ start: '09:00', end: '18:00', context: CONTEXTS.WORK }],
+    calendarEvents: []
+  }, [availabilityEvent]);
+
+  assert.deepEqual(nextState.availableBlocks, remoteBlocks);
+  assert.equal(nextState.availabilitySyncState, 'synced');
+  assert.deepEqual(nextState.dayAvailabilityEvent, {
+    eventId: 'availability-1',
+    etag: '"revision-1"',
+    planDate: '2026-07-20',
+    blocks: remoteBlocks
+  });
+});
+
+test('calendar readback preserves existing local blocks when no day availability exists', () => {
+  const localBlocks = [{ start: '09:00', end: '18:00', context: CONTEXTS.WORK }];
+  const nextState = stateAfterCalendarRead({
+    planDate: '2026-07-20',
+    availableBlocks: localBlocks,
+    calendarEvents: []
+  }, []);
+
+  assert.deepEqual(nextState.availableBlocks, localBlocks);
+  assert.equal(nextState.availabilitySyncState, 'local');
+  assert.equal(nextState.dayAvailabilityEvent, null);
 });
 
 test('calendar readback keeps non-user-fixed scheduled Plan task flexible', () => {
@@ -1647,13 +1702,34 @@ test('date change clears loaded calendar events but keeps local tasks', () => {
       creates: [{ eventId: 'create' }],
       updates: [{ eventId: 'update' }],
       deletes: [{ eventId: 'delete' }]
-    }
+    },
+    availableBlocks: [{ start: '10:00', end: '11:00', context: CONTEXTS.HOME }],
+    settings: {
+      defaultBlocks: [{
+        start: '09:00',
+        end: '18:00',
+        context: CONTEXTS.WORK,
+        enabled: true
+      }]
+    },
+    dayAvailabilityEvent: { eventId: 'old-availability' },
+    availabilitySyncState: 'synced'
   };
 
   assert.deepEqual(resetCalendarStateForDateChange(currentState, '2026-07-07'), {
     ...currentState,
     planDate: '2026-07-07',
     calendarEvents: [],
+    availableBlocks: [{
+      start: '09:00',
+      end: '18:00',
+      context: CONTEXTS.WORK,
+      enabled: true,
+      customName: '',
+      customContextId: null
+    }],
+    dayAvailabilityEvent: null,
+    availabilitySyncState: 'local',
     calendarSchedule: null,
     draftSchedule: null,
     lastSyncOperations: {

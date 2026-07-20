@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Adaptive Planner</title>
-    <link rel="stylesheet" href="./src/styles.css?v=20260716-completion-times" />
+    <link rel="stylesheet" href="./src/styles.css?v=20260720-day-availability" />
     <script src="https://accounts.google.com/gsi/client" async defer></script>
   </head>
   <body>
@@ -36,7 +36,11 @@
         </label>
         <p class="muted">“读取并显示日历”只显示 Google Calendar 已发布状态，不会重新调度；点击“调度”才会生成待发布草案。普通日历事件只作为受保护的不可用时间显示。</p>
         <div id="availableBlocks"></div>
-        <button id="addBlockButton" type="button">添加可用时间块</button>
+        <div class="row">
+          <button id="addBlockButton" type="button">添加可用时间块</button>
+          <button id="syncAvailabilityButton" type="button">同步本日可用时间</button>
+        </div>
+        <p id="availabilitySyncStatus" class="muted">当前使用本机已有的可用时间，尚未同步。</p>
       </section>
 
       <section class="panel">
@@ -131,6 +135,6 @@
       </section>
     </main>
 
-    <script type="module" src="./src/main.js?v=20260716-completion-times"></script>
+    <script type="module" src="./src/main.js?v=20260720-day-availability"></script>
   </body>
 </html>

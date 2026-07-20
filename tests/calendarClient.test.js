@@ -4,6 +4,7 @@ import * as calendarClient from '../src/calendarClient.js';
 
 const {
   clearAccessToken,
+  createDayAvailabilityEvent,
   createPlanEvent,
   deletePlanEvent,
   getLastAuthError,
@@ -12,6 +13,7 @@ const {
   listPrimaryEvents,
   requestAccessToken,
   revokeAccessToken,
+  updateDayAvailabilityEvent,
   updatePlanEvent
 } = calendarClient;
 
@@ -396,4 +398,56 @@ test('calendar API failures throw status and response text', async () => {
     () => listPrimaryEvents('2026-07-06', '2026-07-07'),
     /429.*rate limit exceeded/
   );
+});
+
+test('createDayAvailabilityEvent posts a transparent all-day configuration event', async () => {
+  authorize('availability-create-token');
+  const calls = installFakeFetch(jsonResponse({ id: 'availability-1' }));
+  const metadata = {
+    app: 'adaptive-planner',
+    entityType: 'dayAvailability',
+    schemaVersion: 1,
+    planDate: '2026-07-20',
+    blocks: [{
+      start: '09:00',
+      end: '18:00',
+      context: 'work',
+      enabled: true,
+      customName: '',
+      customContextId: null
+    }]
+  };
+
+  await createDayAvailabilityEvent(metadata);
+
+  const body = JSON.parse(calls[0].options.body);
+  assert.equal(calls[0].options.method, 'POST');
+  assert.equal(body.transparency, 'transparent');
+  assert.deepEqual(body.start, { date: '2026-07-20' });
+  assert.deepEqual(body.end, { date: '2026-07-21' });
+  assert.equal(body.extendedProperties.private.apEntity, 'dayAvailability');
+  assert.match(body.description, /PLAN_AVAILABILITY/);
+});
+
+test('updateDayAvailabilityEvent requires and sends the last read etag', async () => {
+  authorize('availability-update-token');
+  const calls = installFakeFetch(jsonResponse({ id: 'availability/1' }));
+  const metadata = {
+    app: 'adaptive-planner',
+    entityType: 'dayAvailability',
+    schemaVersion: 1,
+    planDate: '2026-07-20',
+    blocks: []
+  };
+
+  await assert.rejects(
+    () => updateDayAvailabilityEvent('availability/1', '', metadata),
+    /etag is required/
+  );
+  await updateDayAvailabilityEvent('availability/1', '"revision-2"', metadata);
+
+  assert.equal(calls[0].options.method, 'PATCH');
+  assert.equal(calls[0].options.headers['If-Match'], '"revision-2"');
+  assert.match(calls[0].url, /availability%2F1$/);
+  assert.equal('id' in JSON.parse(calls[0].options.body), false);
 });

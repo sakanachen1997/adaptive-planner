@@ -1,3 +1,3 @@
-import { initApp } from './ui.js?v=20260708-flexible-readback';
+import { initApp } from './ui.js?v=20260720-day-availability';
 
 initApp();

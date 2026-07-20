@@ -85,6 +85,12 @@ test('calendar controls distinguish read-only import from calendar publishing', 
   assert.match(html, /只有点击下方按钮才会创建、更新或删除 Plan 事件。/);
 });
 
+test('page exposes one-click day availability synchronization and its state', () => {
+  assert.match(html, /id="syncAvailabilityButton"[^>]*>同步本日可用时间<\/button>/);
+  assert.match(html, /id="availabilitySyncStatus"/);
+  assert.match(html, /当前使用本机已有的可用时间，尚未同步。/);
+});
+
 test('page cache-busts static assets after behavior changes', () => {
   assert.match(html, /href="\.\/src\/styles\.css\?v=\d{8}-[a-z0-9-]+"/);
   assert.match(html, /src="\.\/src\/main\.js\?v=\d{8}-[a-z0-9-]+"/);

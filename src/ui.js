@@ -11,16 +11,24 @@ import {
   extractPlanMetadata,
   isPlanManagedEvent
 } from './metadata.js';
+import {
+  buildDayAvailabilityMetadata,
+  dayAvailabilityFromEvent,
+  findDayAvailability,
+  isDayAvailabilityEvent
+} from './dayAvailability.js';
 import { scheduleDay } from './scheduler.js';
 import { calculatePriority } from './priority.js';
 import { addMinutes, combineDateAndTime, minutesBetween, normalizeDateTime } from './time.js';
 import { loadSettings, saveSettings } from './storage.js';
 import {
+  createDayAvailabilityEvent,
   createPlanEvent,
   deletePlanEvent,
   initGoogleAuth,
   listPrimaryEvents,
   requestAccessToken,
+  updateDayAvailabilityEvent,
   updatePlanEvent
 } from './calendarClient.js';
 
@@ -211,7 +219,7 @@ function appendText(parent, text, tagName = 'span') {
 }
 
 export function calendarEventToProtectedBlock(event) {
-  if (isPlanManagedEvent(event)) {
+  if (isPlanManagedEvent(event) || isDayAvailabilityEvent(event)) {
     return null;
   }
 
@@ -1169,10 +1177,19 @@ function emptySyncOperations() {
 }
 
 export function resetCalendarStateForDateChange(currentState, newDate) {
+  const localBlocks = currentState.settings?.defaultBlocks
+    ?.filter((block) => block.enabled)
+    .map(blockFromSetting)
+    ?? currentState.availableBlocks
+    ?? [];
+
   return {
     ...currentState,
     planDate: newDate,
     calendarEvents: [],
+    availableBlocks: localBlocks,
+    dayAvailabilityEvent: null,
+    availabilitySyncState: 'local',
     calendarSchedule: null,
     draftSchedule: null,
     lastSyncOperations: emptySyncOperations()
@@ -1182,10 +1199,16 @@ export function resetCalendarStateForDateChange(currentState, newDate) {
 export function stateAfterCalendarRead(currentState, calendarEvents) {
   const events = [...calendarEvents];
   const calendarTasks = events.map(calendarEventToPlanTask).filter(Boolean);
+  const dayAvailability = findDayAvailability(events, currentState.planDate);
 
   return {
     ...currentState,
     calendarEvents: events,
+    availableBlocks: dayAvailability
+      ? dayAvailability.blocks.map(blockFromSetting)
+      : currentState.availableBlocks,
+    dayAvailabilityEvent: dayAvailability,
+    availabilitySyncState: dayAvailability ? 'synced' : 'local',
     calendarSchedule: calendarScheduleFromTasks(calendarTasks, currentState.planDate),
     draftSchedule: null,
     lastSyncOperations: emptySyncOperations(),
@@ -1325,6 +1348,8 @@ function createState() {
     availableBlocks: settings.defaultBlocks
       .filter((block) => block.enabled)
       .map(blockFromSetting),
+    dayAvailabilityEvent: null,
+    availabilitySyncState: 'local',
     calendarSchedule: null,
     draftSchedule: null,
     lastSyncOperations: emptySyncOperations(),
@@ -1402,6 +1427,32 @@ function showMessage(text, isError = false) {
 function saveCurrentBlocksAsDefaults() {
   state.settings.defaultBlocks = state.availableBlocks.map(blockToSetting);
   saveSettings(state.settings);
+}
+
+function markDayAvailabilityChanged() {
+  state.availabilitySyncState = state.dayAvailabilityEvent ? 'dirty' : 'local';
+}
+
+function renderAvailabilitySyncState() {
+  const target = element('availabilitySyncStatus');
+  const button = element('syncAvailabilityButton');
+
+  if (target) {
+    if (state.availabilitySyncState === 'synced') {
+      target.textContent = '本日可用时间已同步到 Google Calendar。';
+    } else if (state.availabilitySyncState === 'dirty') {
+      target.textContent = '本日可用时间已修改，尚未同步。';
+    } else {
+      target.textContent = '当前使用本机已有的可用时间，尚未同步。';
+    }
+  }
+
+  if (button) {
+    button.disabled = state.availabilitySyncState === 'synced';
+    button.textContent = state.availabilitySyncState === 'dirty'
+      ? '同步本日可用时间修改'
+      : '同步本日可用时间';
+  }
 }
 
 function renderTaskTypeOptions() {
@@ -1525,6 +1576,7 @@ function renderAvailableBlocks() {
   }
 
   clear(root);
+  renderAvailabilitySyncState();
 
   if (state.availableBlocks.length === 0) {
     appendText(root, '没有可用时间块。', 'p');
@@ -2027,6 +2079,7 @@ function fillDefaultBlocks() {
   state.availableBlocks = state.settings.defaultBlocks
     .filter((block) => block.enabled)
     .map(blockFromSetting);
+  markDayAvailabilityChanged();
   renderAvailableBlocks();
   renderExecutionContextOptions();
   recalculate();
@@ -2066,11 +2119,65 @@ async function loadCalendar() {
   try {
     const calendarEvents = await listPrimaryEvents(timeMin, timeMax);
     state = stateAfterCalendarRead(state, calendarEvents);
+    renderAvailableBlocks();
+    renderExecutionContextOptions();
     renderSchedule();
     renderDependencyOptions();
     showMessage(`已读取并显示 ${state.calendarEvents.length} 个日历事件。当前显示的是 Google Calendar 已发布状态；此操作没有重新调度或写入日历。`);
   } catch (error) {
     showMessage(`读取日历失败：${error.message}`, true);
+  }
+}
+
+function replaceDayAvailabilityEvent(event) {
+  state.calendarEvents = [
+    ...state.calendarEvents.filter((candidate) => !isDayAvailabilityEvent(candidate)),
+    event
+  ];
+  state.dayAvailabilityEvent = dayAvailabilityFromEvent(event, state.planDate);
+  state.availabilitySyncState = 'synced';
+}
+
+async function persistDayAvailability() {
+  const timeMin = toCalendarQueryDateTime(state.planDate, '00:00:00');
+  const timeMax = toCalendarQueryDateTime(nextLocalDate(state.planDate), '00:00:00');
+  const latestEvents = await listPrimaryEvents(timeMin, timeMax);
+  const remote = findDayAvailability(latestEvents, state.planDate);
+  const known = state.dayAvailabilityEvent;
+
+  if (remote && !known) {
+    throw new Error('Calendar 中已经存在本日可用时间。请先读取日历，确认远端记录后再修改。');
+  }
+  if (!remote && known) {
+    throw new Error('Calendar 中的本日可用时间已被删除。请重新读取日历。');
+  }
+  if (remote && (remote.eventId !== known.eventId || remote.etag !== known.etag)) {
+    throw new Error('本日可用时间已在另一端修改。请重新读取日历，当前修改没有覆盖远端记录。');
+  }
+
+  const metadata = buildDayAvailabilityMetadata(state.planDate, state.availableBlocks);
+  const savedEvent = known
+    ? await updateDayAvailabilityEvent(known.eventId, known.etag, metadata)
+    : await createDayAvailabilityEvent(metadata);
+
+  replaceDayAvailabilityEvent(savedEvent);
+  renderAvailabilitySyncState();
+  return savedEvent;
+}
+
+async function syncDayAvailability() {
+  const button = element('syncAvailabilityButton');
+  if (button) {
+    button.disabled = true;
+  }
+
+  try {
+    await persistDayAvailability();
+    showMessage('本日可用时间已作为透明事件同步到 Google Calendar。');
+  } catch (error) {
+    showMessage(`同步本日可用时间失败：${error.message}`, true);
+  } finally {
+    renderAvailabilitySyncState();
   }
 }
 
@@ -2088,6 +2195,10 @@ async function syncSchedule() {
   });
 
   try {
+    if (state.availabilitySyncState !== 'synced') {
+      await persistDayAvailability();
+    }
+
     for (const operation of operations.updates) {
       await updatePlanEvent(operation.eventId, operation.segment, operation.description);
     }
@@ -2382,6 +2493,7 @@ function handleAvailableBlockInput(event) {
 
   block[field] = value;
   saveCurrentBlocksAsDefaults();
+  markDayAvailabilityChanged();
   if (field === 'context') {
     renderAvailableBlocks();
   }
@@ -2400,6 +2512,7 @@ function handleAvailableBlockClick(event) {
 
   state.availableBlocks.splice(index, 1);
   saveCurrentBlocksAsDefaults();
+  markDayAvailabilityChanged();
   renderAvailableBlocks();
   renderExecutionContextOptions();
   recalculate();
@@ -2415,6 +2528,7 @@ function addAvailableBlock() {
     customContextId: null
   });
   saveCurrentBlocksAsDefaults();
+  markDayAvailabilityChanged();
   renderAvailableBlocks();
   recalculate();
 }
@@ -2616,6 +2730,7 @@ function wireEvents() {
   element('rescheduleButton')?.addEventListener('click', recalculate);
   element('copyDebugButton')?.addEventListener('click', copyDebugReport);
   element('syncButton')?.addEventListener('click', syncSchedule);
+  element('syncAvailabilityButton')?.addEventListener('click', syncDayAvailability);
   element('addBlockButton')?.addEventListener('click', addAvailableBlock);
   element('availableBlocks')?.addEventListener('input', handleAvailableBlockInput);
   element('availableBlocks')?.addEventListener('change', handleAvailableBlockInput);

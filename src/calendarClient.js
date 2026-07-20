@@ -1,3 +1,5 @@
+import { dayAvailabilityCalendarBody } from './dayAvailability.js';
+
 const CALENDAR_API_BASE = 'https://www.googleapis.com';
 const CALENDAR_EVENTS_PATH = '/calendar/v3/calendars/primary/events';
 const CALENDAR_SCOPE = 'https://www.googleapis.com/auth/calendar.events';
@@ -249,5 +251,32 @@ export async function updatePlanEvent(eventId, segment, description) {
 export async function deletePlanEvent(eventId) {
   return calendarRequest(`${CALENDAR_EVENTS_PATH}/${encodeURIComponent(eventId)}`, {
     method: 'DELETE'
+  });
+}
+
+export async function createDayAvailabilityEvent(metadata) {
+  return calendarRequest(CALENDAR_EVENTS_PATH, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify(dayAvailabilityCalendarBody(metadata))
+  });
+}
+
+export async function updateDayAvailabilityEvent(eventId, etag, metadata) {
+  if (!etag) {
+    throw new Error('day availability event etag is required for update');
+  }
+
+  const { id: ignoredInsertOnlyId, ...body } = dayAvailabilityCalendarBody(metadata);
+
+  return calendarRequest(`${CALENDAR_EVENTS_PATH}/${encodeURIComponent(eventId)}`, {
+    method: 'PATCH',
+    headers: {
+      'Content-Type': 'application/json',
+      'If-Match': etag
+    },
+    body: JSON.stringify(body)
   });
 }
