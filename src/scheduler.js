@@ -583,6 +583,31 @@ function orderByDependencies(tasks, comparator) {
   return ordered.length === tasks.length ? ordered : [...tasks].sort(comparator);
 }
 
+function inheritedDeadlines(tasks) {
+  const deadlines = new Map(tasks.map((task) => [task.taskId, validDateTime(task.deadline)]));
+  let changed = true;
+
+  while (changed) {
+    changed = false;
+    for (const task of tasks) {
+      const successorDeadline = deadlines.get(task.taskId);
+      if (!successorDeadline) {
+        continue;
+      }
+
+      for (const dependencyId of dependencyIds(task)) {
+        const dependencyDeadline = deadlines.get(dependencyId);
+        if (!dependencyDeadline || successorDeadline < dependencyDeadline) {
+          deadlines.set(dependencyId, successorDeadline);
+          changed = true;
+        }
+      }
+    }
+  }
+
+  return deadlines;
+}
+
 function latestDependencyEnd(task, dependencyEnds) {
   return dependencyIds(task).reduce((latest, dependencyId) => {
     const end = dependencyEnds.get(dependencyId);
@@ -799,10 +824,10 @@ function orderingPriority(task, now, groupRep) {
   return calculatePriority(task, now);
 }
 
-function placementComparator(now, groupRep = new Map()) {
+function placementComparator(now, groupRep = new Map(), deadlines = new Map()) {
   return (left, right) => {
-    const leftDeadline = validDateTime(left.deadline);
-    const rightDeadline = validDateTime(right.deadline);
+    const leftDeadline = deadlines.get(left.taskId) ?? validDateTime(left.deadline);
+    const rightDeadline = deadlines.get(right.taskId) ?? validDateTime(right.deadline);
 
     if (leftDeadline && rightDeadline && leftDeadline !== rightDeadline) {
       return leftDeadline < rightDeadline ? -1 : 1;
@@ -1073,7 +1098,10 @@ function reclaimWastedCapacity({
 function scheduleWindow({ tasks, blocks, planDate, now, dependencyEnds = new Map(), reclaim = true }) {
   const capacity = totalMinutes(blocks);
   const groupRep = batchRepresentativePriorities(tasks, now);
-  const ordered = orderByDependencies(tasks, placementComparator(now, groupRep));
+  const ordered = orderByDependencies(
+    tasks,
+    placementComparator(now, groupRep, inheritedDeadlines(tasks))
+  );
   const fixedTasks = ordered.filter((task) => task.fixed && task.fixedStart && task.fixedEnd);
   const flexibleTasks = ordered.filter((task) => !fixedTasks.includes(task));
   const compressionCaps = new Map();

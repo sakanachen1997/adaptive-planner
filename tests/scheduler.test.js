@@ -1816,6 +1816,33 @@ test('dependencies are enforced across work and home scheduling windows', () => 
   );
 });
 
+test('home dependency can finish before a deadline within the same evening window', () => {
+  const result = scheduleDay({
+    planDate: '2026-08-05',
+    now: '2026-08-05T10:13:39',
+    scheduleStart: '2026-08-05T10:13:39',
+    availableBlocks: [
+      { start: '2026-08-05T17:20:00', end: '2026-08-05T23:00:00', context: CONTEXTS.HOME },
+      { start: '2026-08-05T09:05:00', end: '2026-08-05T16:40:00', context: CONTEXTS.WORK }
+    ],
+    protectedBlocks: [],
+    tasks: [
+      task({ taskId: 'groceries', taskName: 'groceries', desiredMinutes: 40, minimumMinutes: 40, executionContext: CONTEXTS.HOME, externalCommitment: 1, splittable: true, minSegmentMinutes: 15 }),
+      task({ taskId: 'dinner', taskName: 'dinner', desiredMinutes: 70, minimumMinutes: 70, executionContext: CONTEXTS.HOME, deadline: '2026-08-05T20:00', externalCommitment: 1, dependencyTaskIds: ['groceries'], splittable: true, minSegmentMinutes: 15 }),
+      task({ taskId: 'vocabulary', taskName: 'vocabulary', desiredMinutes: 30, minimumMinutes: 30, executionContext: CONTEXTS.HOME, externalCommitment: 1, splittable: true, minSegmentMinutes: 10 }),
+      task({ taskId: 'draft', taskName: 'draft', desiredMinutes: 90, minimumMinutes: 60, executionContext: CONTEXTS.HOME, orderPreference: 'evening', externalCommitment: 4, splittable: true, minSegmentMinutes: 30 })
+    ]
+  });
+  const segments = scheduledSegments(result);
+  const dinner = segments.filter((segment) => segment.taskId === 'dinner');
+  const groceries = segments.filter((segment) => segment.taskId === 'groceries');
+
+  assert.notEqual(result.status, 'conflict');
+  assert.equal(dinner.reduce((total, segment) => total + segment.allocatedMinutes, 0), 70);
+  assert.ok(dinner.every((segment) => segment.end <= '2026-08-05T20:00:00'));
+  assert.ok(groceries.every((segment) => segment.end <= dinner[0].start));
+});
+
 test('named custom execution contexts only use their matching named block', () => {
   const result = scheduleDay({
     planDate: PLAN_DATE,
