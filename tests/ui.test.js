@@ -25,6 +25,7 @@ import {
   resolveScheduleStart,
   uncompleteTaskInList,
   taskInputFromFormData,
+  taskPresetFromTaskInput,
   formInputForTask,
   shouldShowRecoveryActions,
   mergePlanTasks,
@@ -428,6 +429,36 @@ test('formInputForTask preserves task fields as form-ready values', () => {
     fixedEnd: '20:00',
     dependencyTaskIds: ['research']
   });
+});
+
+test('task preset normalizes a complete task input into reusable form values', () => {
+  const preset = taskPresetFromTaskInput({
+    taskName: ' 每周复盘 ',
+    taskType: '自定义',
+    desiredMinutes: '60',
+    minimumMinutes: '30',
+    importance: '4',
+    urgency: '2',
+    deadline: '',
+    executionContext: 'any',
+    energyDemand: 'medium',
+    physicalDemand: 'low',
+    orderPreference: 'any',
+    splittable: true,
+    minSegmentMinutes: '15',
+    externalCommitment: '1',
+    fixed: false,
+    fixedStart: '',
+    fixedEnd: '',
+    dependencyTaskIds: ['research']
+  }, 'preset-review');
+
+  assert.equal(preset.id, 'preset-review');
+  assert.equal(preset.name, '每周复盘');
+  assert.equal(preset.taskInput.taskName, '每周复盘');
+  assert.equal(preset.taskInput.desiredMinutes, '60');
+  assert.deepEqual(preset.taskInput.dependencyTaskIds, ['research']);
+  assert.equal(Object.hasOwn(preset.taskInput, 'taskId'), false);
 });
 
 test('fixed task form input derives desired and minimum duration from fixed time range', () => {

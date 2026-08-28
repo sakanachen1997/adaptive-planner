@@ -65,6 +65,48 @@ p {
   gap: 8px;
 }
 
+.task-presets {
+  margin-bottom: 14px;
+  padding-bottom: 14px;
+  border-bottom: 1px solid var(--border);
+}
+
+.task-preset-heading,
+.task-preset-item {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.task-preset-heading {
+  flex-wrap: wrap;
+}
+
+.task-preset-heading strong {
+  margin-right: auto;
+}
+
+.task-presets p {
+  margin: 8px 0;
+}
+
+.task-preset-list {
+  display: grid;
+  gap: 6px;
+}
+
+.task-preset-item button:first-child {
+  flex: 1;
+  overflow: hidden;
+  text-align: left;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.task-preset-remove {
+  color: var(--danger);
+}
+
 .field {
   display: grid;
   gap: 4px;

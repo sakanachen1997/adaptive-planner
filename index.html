@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Adaptive Planner</title>
-    <link rel="stylesheet" href="./src/styles.css?v=20260720-day-availability" />
+    <link rel="stylesheet" href="./src/styles.css?v=20260828-task-presets" />
     <script src="https://accounts.google.com/gsi/client" async defer></script>
   </head>
   <body>
@@ -45,6 +45,15 @@
 
       <section class="panel">
         <h2>添加任务</h2>
+        <div class="task-presets">
+          <div class="task-preset-heading">
+            <strong>任务预设</strong>
+            <span id="taskPresetCount" class="muted">0/10</span>
+            <button id="saveTaskPresetButton" type="button">保存当前表单为预设</button>
+          </div>
+          <p class="muted">点击预设只会填充下方表单；确认后仍需点击“添加任务”。</p>
+          <div id="taskPresetList" class="task-preset-list"></div>
+        </div>
         <form id="taskForm" class="form-grid">
           <label class="field">
             <span>任务名</span>
@@ -135,6 +144,6 @@
       </section>
     </main>
 
-    <script type="module" src="./src/main.js?v=20260720-day-availability"></script>
+    <script type="module" src="./src/main.js?v=20260828-task-presets"></script>
   </body>
 </html>

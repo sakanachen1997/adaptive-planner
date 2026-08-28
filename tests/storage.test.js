@@ -1,8 +1,45 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { DEFAULT_SETTINGS, loadSettings, saveSettings } from '../src/storage.js';
+import {
+  DEFAULT_SETTINGS,
+  MAX_TASK_PRESETS,
+  loadSettings,
+  loadTaskPresets,
+  saveSettings,
+  saveTaskPresets
+} from '../src/storage.js';
 
 const SETTINGS_KEY = 'adaptivePlanner.settings.v1';
+const TASK_PRESETS_KEY = 'adaptivePlanner.taskPresets.v1';
+
+function taskPreset(overrides = {}) {
+  return {
+    id: 'preset-1',
+    name: '晨间复盘',
+    ...overrides,
+    taskInput: {
+      taskName: '晨间复盘',
+      taskType: '自定义',
+      desiredMinutes: '30',
+      minimumMinutes: '20',
+      importance: '3',
+      urgency: '1',
+      deadline: '',
+      executionContext: 'any',
+      energyDemand: 'medium',
+      physicalDemand: 'low',
+      orderPreference: 'morning',
+      splittable: false,
+      minSegmentMinutes: '20',
+      externalCommitment: '1',
+      fixed: false,
+      fixedStart: '',
+      fixedEnd: '',
+      dependencyTaskIds: [],
+      ...overrides.taskInput
+    }
+  };
+}
 
 function installFakeLocalStorage() {
   const items = new Map();
@@ -206,4 +243,41 @@ test('named custom block identity and label survive settings round trip', () => 
 
   assert.equal(saveSettings(settings), true);
   assert.deepEqual(loadSettings(), settings);
+});
+
+test('task presets round-trip independently from settings and are cloned', () => {
+  installFakeLocalStorage();
+  const presets = [taskPreset({ taskInput: { dependencyTaskIds: ['research'] } })];
+
+  assert.equal(saveTaskPresets(presets), true);
+  assert.deepEqual(loadTaskPresets(), presets);
+  assert.equal(globalThis.localStorage.getItem(SETTINGS_KEY), null);
+
+  const firstLoad = loadTaskPresets();
+  firstLoad[0].taskInput.taskName = 'changed';
+  firstLoad[0].taskInput.dependencyTaskIds.push('review');
+  assert.deepEqual(loadTaskPresets(), presets);
+});
+
+test('task preset storage rejects more than ten presets', () => {
+  installFakeLocalStorage();
+  const presets = Array.from({ length: MAX_TASK_PRESETS + 1 }, (_, index) => taskPreset({
+    id: `preset-${index}`,
+    name: `预设 ${index}`
+  }));
+
+  assert.equal(MAX_TASK_PRESETS, 10);
+  assert.equal(saveTaskPresets(presets), false);
+  assert.equal(globalThis.localStorage.getItem(TASK_PRESETS_KEY), null);
+});
+
+test('task preset loading drops malformed entries without losing valid presets', () => {
+  installFakeLocalStorage();
+  const valid = taskPreset();
+  globalThis.localStorage.setItem(TASK_PRESETS_KEY, JSON.stringify([
+    valid,
+    { id: 'broken', name: 'Broken', taskInput: { taskName: 'Broken' } }
+  ]));
+
+  assert.deepEqual(loadTaskPresets(), [valid]);
 });

@@ -20,7 +20,13 @@ import {
 import { scheduleDay } from './scheduler.js';
 import { calculatePriority } from './priority.js';
 import { addMinutes, combineDateAndTime, minutesBetween, normalizeDateTime } from './time.js';
-import { loadSettings, saveSettings } from './storage.js';
+import {
+  MAX_TASK_PRESETS,
+  loadSettings,
+  loadTaskPresets,
+  saveSettings,
+  saveTaskPresets
+} from './storage.js';
 import {
   createDayAvailabilityEvent,
   createPlanEvent,
@@ -1342,6 +1348,7 @@ function createState() {
 
   return {
     settings,
+    taskPresets: loadTaskPresets(),
     planDate: localDateString(),
     calendarEvents: [],
     tasks: [],
@@ -1467,21 +1474,21 @@ function renderTaskTypeOptions() {
   );
 }
 
-function renderExecutionContextOptions() {
+function renderExecutionContextOptions(selectedValue) {
   const select = firstElement('select[name="executionContext"]');
 
   if (!select) {
     return;
   }
 
-  const selectedValue = select.value;
-  const options = executionContextOptionsForBlocks(state.availableBlocks, selectedValue);
+  const value = selectedValue ?? select.value;
+  const options = executionContextOptionsForBlocks(state.availableBlocks, value);
 
   select.replaceChildren(
     ...options.map(({ value, label }) => option(value, label))
   );
-  if (selectedValue) {
-    select.value = selectedValue;
+  if (value) {
+    select.value = value;
   }
 }
 
@@ -1501,6 +1508,46 @@ function renderTaskPresetFieldOptions() {
   renderSelectOptions('energyDemand', ENERGY_DEMAND_OPTIONS);
   renderSelectOptions('physicalDemand', PHYSICAL_DEMAND_OPTIONS);
   renderSelectOptions('orderPreference', ORDER_PREFERENCE_OPTIONS);
+}
+
+function renderTaskPresets() {
+  const root = element('taskPresetList');
+  const count = element('taskPresetCount');
+  const saveButton = element('saveTaskPresetButton');
+
+  if (count) {
+    count.textContent = `${state.taskPresets.length}/${MAX_TASK_PRESETS}`;
+  }
+  if (saveButton) {
+    saveButton.disabled = state.taskPresets.length >= MAX_TASK_PRESETS;
+  }
+  if (!root) {
+    return;
+  }
+
+  clear(root);
+  if (state.taskPresets.length === 0) {
+    appendText(root, '还没有预设。填好任务后可保存当前表单。', 'span').className = 'muted';
+    return;
+  }
+
+  for (const preset of state.taskPresets) {
+    const item = document.createElement('div');
+    const fillButton = document.createElement('button');
+    const removeButton = document.createElement('button');
+
+    item.className = 'task-preset-item';
+    fillButton.type = 'button';
+    fillButton.textContent = preset.name;
+    fillButton.dataset.fillTaskPresetId = preset.id;
+    removeButton.type = 'button';
+    removeButton.textContent = '删除';
+    removeButton.className = 'task-preset-remove';
+    removeButton.dataset.removeTaskPresetId = preset.id;
+    removeButton.setAttribute('aria-label', `删除任务预设：${preset.name}`);
+    item.append(fillButton, removeButton);
+    root.append(item);
+  }
 }
 
 function renderDependencyOptions(selectedTaskIds = []) {
@@ -2311,6 +2358,7 @@ function fillTaskForm(task) {
 
   const input = formInputForTask(task);
   renderDependencyOptions(input.dependencyTaskIds);
+  renderExecutionContextOptions(input.executionContext);
   form.elements.taskName.value = input.taskName;
   form.elements.taskType.value = input.taskType;
   form.elements.desiredMinutes.value = input.desiredMinutes;
@@ -2328,6 +2376,82 @@ function fillTaskForm(task) {
   form.elements.fixed.checked = input.fixed;
   form.elements.fixedStart.value = input.fixedStart;
   form.elements.fixedEnd.value = input.fixedEnd;
+}
+
+export function taskPresetFromTaskInput(input, id) {
+  const task = createTask(input);
+
+  return {
+    id: id || globalThis.crypto?.randomUUID?.()
+      || `preset_${Date.now()}_${Math.random().toString(16).slice(2)}`,
+    name: task.taskName,
+    taskInput: formInputForTask(task)
+  };
+}
+
+function saveCurrentTaskAsPreset() {
+  if (state.taskPresets.length >= MAX_TASK_PRESETS) {
+    showMessage(`最多只能保存 ${MAX_TASK_PRESETS} 个任务预设。`, true);
+    return;
+  }
+
+  try {
+    const preset = taskPresetFromTaskInput(taskInputFromForm(element('taskForm')));
+    const nextPresets = [...state.taskPresets, preset];
+    if (!saveTaskPresets(nextPresets)) {
+      showMessage('任务预设保存失败：浏览器本地存储不可用。', true);
+      return;
+    }
+
+    state.taskPresets = nextPresets;
+    renderTaskPresets();
+    showMessage(`已保存任务预设“${preset.name}”。`);
+  } catch (error) {
+    showMessage(`保存任务预设失败：${error.message}`, true);
+  }
+}
+
+function fillTaskPreset(presetId) {
+  const preset = state.taskPresets.find((candidate) => candidate.id === presetId);
+  if (!preset) {
+    showMessage('找不到该任务预设。', true);
+    return;
+  }
+
+  state.editingTaskKey = null;
+  fillTaskForm(preset.taskInput);
+  setTaskFormMode(null);
+  showMessage(`已填入任务预设“${preset.name}”，请检查后点击“添加任务”。`);
+}
+
+function removeTaskPreset(presetId) {
+  const preset = state.taskPresets.find((candidate) => candidate.id === presetId);
+  if (!preset) {
+    return;
+  }
+
+  const nextPresets = state.taskPresets.filter((candidate) => candidate.id !== presetId);
+  if (!saveTaskPresets(nextPresets)) {
+    showMessage('删除任务预设失败：浏览器本地存储不可用。', true);
+    return;
+  }
+
+  state.taskPresets = nextPresets;
+  renderTaskPresets();
+  showMessage(`已删除任务预设“${preset.name}”。`);
+}
+
+function handleTaskPresetClick(event) {
+  const fillId = event.target.dataset.fillTaskPresetId;
+  if (fillId) {
+    fillTaskPreset(fillId);
+    return;
+  }
+
+  const removeId = event.target.dataset.removeTaskPresetId;
+  if (removeId) {
+    removeTaskPreset(removeId);
+  }
 }
 
 function resetTaskForm() {
@@ -2736,6 +2860,8 @@ function wireEvents() {
   element('availableBlocks')?.addEventListener('change', handleAvailableBlockInput);
   element('availableBlocks')?.addEventListener('click', handleAvailableBlockClick);
   element('taskForm')?.addEventListener('submit', submitTaskForm);
+  element('saveTaskPresetButton')?.addEventListener('click', saveCurrentTaskAsPreset);
+  element('taskPresetList')?.addEventListener('click', handleTaskPresetClick);
   element('deadlineTodayButton')?.addEventListener('click', fillDeadlineToday);
   firstElement('select[name="taskType"]')?.addEventListener('change', (event) => {
     applyTaskTypePreset(event.target.value);
@@ -2781,6 +2907,7 @@ export function initApp() {
   renderTaskTypeOptions();
   renderExecutionContextOptions();
   renderTaskPresetFieldOptions();
+  renderTaskPresets();
   renderDependencyOptions();
   applyTaskTypePreset(firstElement('select[name="taskType"]')?.value);
   setTaskFormMode(null);

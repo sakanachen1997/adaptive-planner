@@ -57,6 +57,13 @@ test('deadline field exposes a today shortcut button', () => {
   assert.match(html, /id="deadlineTodayButton"[^>]*>今日<\/button>/);
 });
 
+test('task form exposes persistent presets that only fill the form', () => {
+  assert.match(html, /id="taskPresetCount"[^>]*>0\/10<\/span>/);
+  assert.match(html, /id="saveTaskPresetButton"[^>]*>保存当前表单为预设<\/button>/);
+  assert.match(html, /id="taskPresetList"/);
+  assert.match(html, /点击预设只会填充下方表单；确认后仍需点击“添加任务”/);
+});
+
 test('dependency choices use a direct checkbox container instead of a native multi-select', () => {
   assert.match(html, /id="dependencyTaskChoices"/);
   assert.doesNotMatch(html, /select name="dependencyTaskIds"[^>]*multiple/);
