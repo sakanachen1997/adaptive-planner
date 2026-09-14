@@ -723,7 +723,8 @@ export function conflictSummaryLines(conflict) {
   }
 
   return [
-    `可用时间 ${conflict.availableMinutes} 分钟，任务最小需要 ${conflict.requiredMinimumMinutes} 分钟。`
+    `可用时间 ${conflict.availableMinutes} 分钟，任务最小需要 ${conflict.requiredMinimumMinutes} 分钟。`,
+    `还差 ${Math.max(0, conflict.requiredMinimumMinutes - conflict.availableMinutes)} 分钟；可增加可用时间、降低任务最小时长，或跳过今天不做的任务后重排。`
   ];
 }
 
@@ -1849,6 +1850,13 @@ function renderScheduleSummary(parent) {
       `想要总时长 ${schedule.durationPlan.desiredMinutes} 分钟，最小总时长 ${schedule.durationPlan.minimumMinutes} 分钟，可用时间 ${schedule.durationPlan.availableMinutes} 分钟。`,
       'p'
     ).className = 'muted';
+    if (schedule.durationPlan.scheduledMinutes != null) {
+      appendText(
+        parent,
+        `已安排 ${schedule.durationPlan.scheduledMinutes} 分钟，比想要时长少 ${schedule.durationPlan.compressedMinutes} 分钟，剩余空闲 ${schedule.durationPlan.unallocatedMinutes} 分钟。空闲时间仍需满足任务场景、截止时间和最小分段要求才能使用。`,
+        'p'
+      ).className = 'muted';
+    }
     return;
   }
 

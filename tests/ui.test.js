@@ -681,7 +681,8 @@ test('minimum overflow conflict summary reports total available versus required 
   });
 
   assert.deepEqual(lines, [
-    '可用时间 60 分钟，任务最小需要 75 分钟。'
+    '可用时间 60 分钟，任务最小需要 75 分钟。',
+    '还差 15 分钟；可增加可用时间、降低任务最小时长，或跳过今天不做的任务后重排。'
   ]);
 });
 

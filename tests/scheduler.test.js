@@ -43,6 +43,54 @@ function assertNoOverlaps(segments) {
   }
 }
 
+test('overlapping contexts count wall-clock capacity only once', () => {
+  const result = scheduleDay({
+    planDate: PLAN_DATE, now: NOW,
+    availableBlocks: [block('09:00', '10:00'), block('09:00', '10:00', CONTEXTS.HOME)],
+    tasks: [task({ desiredMinutes: 90, minimumMinutes: 90 })]
+  });
+  assert.equal(result.status, 'conflict');
+  assert.equal(result.conflict.kind, 'minimum_overflow');
+  assert.equal(result.conflict.availableMinutes, 60);
+});
+
+test('overlapping same-context availability supports one continuous task', () => {
+  const result = scheduleDay({
+    planDate: PLAN_DATE, now: NOW,
+    availableBlocks: [block('09:00', '10:00'), block('09:30', '10:30')],
+    tasks: [task({ desiredMinutes: 90, minimumMinutes: 90, splittable: false })]
+  });
+  assert.equal(result.status, 'ok');
+  assert.equal(result.durationPlan.availableMinutes, 90);
+  assert.equal(scheduledSegments(result).length, 1);
+  assert.equal(scheduledSegments(result)[0].allocatedMinutes, 90);
+});
+
+test('day planning clips availability to its date', () => {
+  const result = scheduleDay({
+    planDate: PLAN_DATE, now: NOW,
+    availableBlocks: [{ start: `${PLAN_DATE}T23:00:00`, end: '2026-07-07T02:00:00', context: CONTEXTS.WORK }],
+    tasks: [task({ desiredMinutes: 120, minimumMinutes: 30 })]
+  });
+  assert.equal(result.status, 'ok');
+  assert.equal(result.durationPlan.availableMinutes, 60);
+  assert.equal(result.durationPlan.scheduledMinutes, 60);
+  assert.equal(result.durationPlan.compressedMinutes, 60);
+  assert.equal(result.durationPlan.unallocatedMinutes, 0);
+  assert.ok(scheduledSegments(result).every((segment) => segment.end <= '2026-07-07T00:00:00'));
+});
+
+test('summary reports unallocated time separately from desired task time', () => {
+  const result = scheduleDay({
+    planDate: PLAN_DATE, now: NOW,
+    availableBlocks: [block('09:00', '11:00')],
+    tasks: [task({ desiredMinutes: 30, minimumMinutes: 30 })]
+  });
+  assert.equal(result.durationPlan.scheduledMinutes, 30);
+  assert.equal(result.durationPlan.unallocatedMinutes, 90);
+  assert.equal(result.durationPlan.compressedMinutes, 0);
+});
+
 test('detects hard minimum duration conflict', () => {
   const result = scheduleDay({
     planDate: PLAN_DATE,

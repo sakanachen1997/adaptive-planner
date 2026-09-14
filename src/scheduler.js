@@ -1,5 +1,6 @@
 import { CONTEXTS, TASK_STATUSES } from './models.js';
 import { calculatePriority, scorePlacement } from './priority.js';
+import { buildDayAvailability } from './availability.js';
 import {
   addMinutes,
   minutesBetween,
@@ -33,34 +34,6 @@ function contextCompatible(task, block) {
       taskContext === CONTEXTS.CUSTOM
         && String(block.context).startsWith(`${CONTEXTS.CUSTOM}:`)
     );
-}
-
-function normalizePositiveBlocks(blocks) {
-  return blocks
-    .map((block) => ({
-      ...block,
-      start: normalizeDateTime(block.start),
-      end: normalizeDateTime(block.end)
-    }))
-    .filter((block) => intervalMinutes(block.start, block.end) > 0);
-}
-
-function futurePartOfBlocks(blocks, now) {
-  const current = normalizeDateTime(now);
-
-  return normalizePositiveBlocks(blocks)
-    .map((block) => {
-      if (block.end <= current) {
-        return null;
-      }
-
-      if (block.start < current) {
-        return { ...block, start: current };
-      }
-
-      return block;
-    })
-    .filter(Boolean);
 }
 
 function fixedDateTime(planDate, time) {
@@ -271,8 +244,14 @@ function withPlacedActualDurations(durationPlan, segments) {
     );
   }
 
+  const scheduledMinutes = [...actualByTask.values()].reduce((sum, minutes) => sum + minutes, 0);
   return {
     ...durationPlan,
+    scheduledMinutes,
+    unallocatedMinutes: Math.max(0, durationPlan.availableMinutes - scheduledMinutes),
+    compressedMinutes: durationPlan.allocations.reduce((sum, item) => (
+      sum + Math.max(0, item.desiredMinutes - (actualByTask.get(item.taskId) ?? 0))
+    ), 0),
     allocations: durationPlan.allocations.map((item) => ({
       ...item,
       plannedMinutes: item.actualMinutes,
@@ -1417,11 +1396,12 @@ export function scheduleDay({
   const active = activeTasks(tasks)
     .map((task) => unlockAutoFixedDeadlineViolation(task, planDate))
     .map((task) => taskWithEffectiveWork(task, planDate, schedulingNow));
-  const available = futurePartOfBlocks(
-    subtractIntervals(availableBlocks, blockedIntervals),
-    schedulingNow
-  );
-  const availableMinutes = totalMinutes(available);
+  const { blocks: available, availableMinutes } = buildDayAvailability({
+    planDate,
+    scheduleStart: schedulingNow,
+    availableBlocks,
+    blockedIntervals
+  });
   const requiredMinimumMinutes = active.reduce((sum, task) => (
     sum + task.effectiveMinimumMinutes
   ), 0);
