@@ -19,12 +19,15 @@ import {
 } from './dayAvailability.js';
 import { scheduleDay } from './scheduler.js';
 import { calculatePriority } from './priority.js';
+import { applyRanking, moveInOrder, rankedTaskOrder } from './ranking.js';
 import { addMinutes, combineDateAndTime, minutesBetween, normalizeDateTime } from './time.js';
 import {
   MAX_TASK_PRESETS,
+  loadDayRanking,
   loadDayTasks,
   loadSettings,
   loadTaskPresets,
+  saveDayRanking,
   saveDayTasks,
   saveSettings,
   saveTaskPresets
@@ -1393,6 +1396,7 @@ function createState() {
     planDate,
     calendarEvents: [],
     tasks: loadDayTasks(planDate),
+    ranking: loadDayRanking(planDate),
     availableBlocks: settings.defaultBlocks
       .filter((block) => block.enabled)
       .map(blockFromSetting),
@@ -1770,6 +1774,141 @@ function renderAvailableBlocks() {
   });
 }
 
+function rankingTasks() {
+  return logicalTasksForSchedule(allTasks());
+}
+
+function currentRankingOrder() {
+  return rankedTaskOrder(rankingTasks(), state.ranking ?? []);
+}
+
+function setRanking(order) {
+  state.ranking = Array.isArray(order) ? [...order] : null;
+  saveDayRanking(state.planDate, state.ranking);
+  recalculate();
+}
+
+function renderRanking() {
+  const list = element('rankingList');
+  const status = element('rankingStatus');
+  const reset = element('resetRankingButton');
+  const note = element('rankingOverrideNote');
+  const active = state.ranking !== null;
+
+  if (status) {
+    status.textContent = active
+      ? '当天使用拖动排名，重要性、紧迫度、外部承诺暂不生效。'
+      : '当前按重要性、紧迫度、外部承诺计算；调整任意一项即改用排名。';
+  }
+  reset?.classList.toggle('hidden', !active);
+  note?.classList.toggle('hidden', !active);
+
+  if (!list) {
+    return;
+  }
+
+  clear(list);
+  const byId = new Map(rankingTasks().map((task) => [task.taskId, task]));
+  const order = currentRankingOrder();
+
+  if (order.length === 0) {
+    appendText(list, '还没有未完成的任务。', 'li').className = 'muted ranking-empty';
+    return;
+  }
+
+  order.forEach((taskId, index) => {
+    const task = byId.get(taskId);
+    const item = document.createElement('li');
+    item.className = 'ranking-item';
+    item.dataset.rankTaskId = taskId;
+
+    const handle = document.createElement('span');
+    handle.className = 'ranking-handle';
+    handle.textContent = '⋮⋮';
+    handle.setAttribute('aria-hidden', 'true');
+
+    const label = document.createElement('span');
+    label.className = 'ranking-label';
+    appendText(label, task.taskName, 'strong');
+    appendText(label, `${task.desiredMinutes} 分钟`, 'small');
+
+    const up = document.createElement('button');
+    up.type = 'button';
+    up.textContent = '↑';
+    up.disabled = index === 0;
+    up.dataset.rankMove = '-1';
+    up.setAttribute('aria-label', `上移 ${task.taskName}`);
+
+    const down = document.createElement('button');
+    down.type = 'button';
+    down.textContent = '↓';
+    down.disabled = index === order.length - 1;
+    down.dataset.rankMove = '1';
+    down.setAttribute('aria-label', `下移 ${task.taskName}`);
+
+    item.append(handle, label, up, down);
+    list.append(item);
+  });
+}
+
+function handleRankingClick(event) {
+  const button = event.target.closest?.('[data-rank-move]');
+  const taskId = button?.closest('[data-rank-task-id]')?.dataset.rankTaskId;
+
+  if (!button || !taskId) {
+    return;
+  }
+
+  setRanking(moveInOrder(currentRankingOrder(), taskId, Number(button.dataset.rankMove)));
+}
+
+// Pointer-based dragging works for mouse and touch alike (native HTML5 drag
+// and drop does not fire on touch screens).
+function handleRankingPointerDown(event) {
+  const handle = event.target.closest?.('.ranking-handle');
+  const item = handle?.closest('.ranking-item');
+  const list = element('rankingList');
+
+  if (!item || !list) {
+    return;
+  }
+
+  event.preventDefault();
+  const startOrder = [...list.children].map((child) => child.dataset.rankTaskId);
+  item.classList.add('dragging');
+
+  const onMove = (moveEvent) => {
+    const siblings = [...list.children].filter((child) => child !== item);
+    const before = siblings.find((child) => {
+      const rect = child.getBoundingClientRect();
+      return moveEvent.clientY < rect.top + rect.height / 2;
+    });
+    list.insertBefore(item, before ?? null);
+  };
+
+  // Listen on window: moving the item in the DOM would drop pointer capture.
+  const onEnd = () => {
+    window.removeEventListener('pointermove', onMove);
+    window.removeEventListener('pointerup', onEnd);
+    window.removeEventListener('pointercancel', onEnd);
+    item.classList.remove('dragging');
+
+    const order = [...list.children].map((child) => child.dataset.rankTaskId);
+    if (order.join('|') !== startOrder.join('|')) {
+      setRanking(order);
+    }
+  };
+
+  window.addEventListener('pointermove', onMove);
+  window.addEventListener('pointerup', onEnd);
+  window.addEventListener('pointercancel', onEnd);
+}
+
+function resetRanking() {
+  setRanking(null);
+  showMessage('已恢复按重要性、紧迫度、外部承诺计算优先级。');
+}
+
 function renderConflictPanel() {
   const panel = element('conflictPanel');
 
@@ -1809,7 +1948,7 @@ function appendEditButton(parent, task) {
 }
 
 function renderConflictEditableTasks(root, tasks) {
-  const editableTasks = editableTasksForSchedule(state.draftSchedule, tasks);
+  const editableTasks = editableTasksForSchedule(state.draftSchedule, applyRanking(tasks, state.ranking));
 
   if (editableTasks.length === 0) {
     return;
@@ -2232,9 +2371,10 @@ function recalculate() {
     scheduleStart: currentScheduleStart(),
     availableBlocks: concreteAvailableBlocks(),
     protectedBlocks: protectedBlocksFromCalendar(),
-    tasks: logicalTasksForSchedule(taskRecords)
+    tasks: applyRanking(logicalTasksForSchedule(taskRecords), state.ranking)
   });
   renderSchedule();
+  renderRanking();
   renderDependencyOptions(selectedDependencyTaskIds);
 }
 
@@ -2285,6 +2425,7 @@ async function loadCalendar() {
     renderAvailableBlocks();
     renderExecutionContextOptions();
     renderSchedule();
+    renderRanking();
     renderDependencyOptions();
     showMessage(`已读取并显示 ${state.calendarEvents.length} 个日历事件。当前显示的是 Google Calendar 已发布状态；此操作没有重新调度或写入日历。`);
   } catch (error) {
@@ -3040,6 +3181,9 @@ function wireEvents() {
     recalculate();
   });
   element('scheduleList')?.addEventListener('click', handleScheduleClick);
+  element('rankingList')?.addEventListener('click', handleRankingClick);
+  element('rankingList')?.addEventListener('pointerdown', handleRankingPointerDown);
+  element('resetRankingButton')?.addEventListener('click', resetRanking);
   element('planDateInput')?.addEventListener('change', (event) => {
     dismissUndoToast();
     state = resetCalendarStateForDateChange(
@@ -3047,6 +3191,7 @@ function wireEvents() {
       event.target.value || localDateString()
     );
     state.tasks = loadDayTasks(state.planDate);
+    state.ranking = loadDayRanking(state.planDate);
     resetTaskForm();
     recalculate();
   });
@@ -3094,5 +3239,6 @@ export function initApp() {
     recalculate();
   } else {
     renderSchedule();
+    renderRanking();
   }
 }

@@ -1,6 +1,7 @@
 const SETTINGS_KEY = 'adaptivePlanner.settings.v1';
 const TASK_PRESETS_KEY = 'adaptivePlanner.taskPresets.v1';
 const DAY_TASKS_KEY = 'adaptivePlanner.dayTasks.v1';
+const DAY_RANKING_KEY = 'adaptivePlanner.dayRanking.v1';
 export const MAX_TASK_PRESETS = 10;
 
 const DEFAULT_BLOCKS = Object.freeze([
@@ -205,9 +206,9 @@ function isValidStoredTask(task) {
     && typeof task.taskName === 'string';
 }
 
-function readDayTaskMap(storage) {
+function readDayTaskMap(storage, key = DAY_TASKS_KEY) {
   try {
-    const raw = storage.getItem(DAY_TASKS_KEY);
+    const raw = storage.getItem(key);
     if (!raw) {
       return {};
     }
@@ -252,6 +253,41 @@ export function saveDayTasks(planDate, tasks) {
 
   try {
     storage.setItem(DAY_TASKS_KEY, JSON.stringify(map));
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+// Manual ranking per plan date: an ordered list of task ids, or null when the
+// day still uses the numeric importance / urgency / external commitment.
+export function loadDayRanking(planDate) {
+  const storage = getLocalStorage();
+  if (!storage || !PLAN_DATE_PATTERN.test(String(planDate))) {
+    return null;
+  }
+
+  const ranking = readDayTaskMap(storage, DAY_RANKING_KEY)[planDate];
+  return Array.isArray(ranking)
+    ? ranking.filter((taskId) => typeof taskId === 'string' && taskId !== '')
+    : null;
+}
+
+export function saveDayRanking(planDate, ranking) {
+  const storage = getLocalStorage();
+  if (!storage || !PLAN_DATE_PATTERN.test(String(planDate))) {
+    return false;
+  }
+
+  const map = readDayTaskMap(storage, DAY_RANKING_KEY);
+  if (Array.isArray(ranking)) {
+    map[planDate] = ranking.filter((taskId) => typeof taskId === 'string' && taskId !== '');
+  } else {
+    delete map[planDate];
+  }
+
+  try {
+    storage.setItem(DAY_RANKING_KEY, JSON.stringify(map));
     return true;
   } catch {
     return false;

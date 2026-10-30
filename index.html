@@ -91,6 +91,7 @@
           <details id="taskAdvancedOptions" class="advanced-options field-wide">
             <summary>更多选项 <small class="muted">重要性、紧迫度、场景、精力、前置任务、拆分、固定时间</small></summary>
             <div class="form-grid">
+              <small id="rankingOverrideNote" class="field-wide ranking-override-note hidden">当天正在使用拖动排名：重要性、紧迫度、外部承诺暂不生效（仍会保存）。</small>
               <label class="field">
                 <span>重要性（1–5）</span>
                 <input name="importance" required type="number" min="1" max="5" value="3" />
@@ -143,6 +144,15 @@
           <button id="taskSubmitButton" type="submit">添加任务</button>
           <button id="cancelEditTaskButton" class="hidden" type="button">取消编辑</button>
         </form>
+        <div class="ranking-section">
+          <div class="ranking-heading">
+            <h3>任务排名</h3>
+            <button id="resetRankingButton" type="button" class="hidden">恢复按数字排序</button>
+          </div>
+          <p class="muted">拖动 ⋮⋮ 或点 ↑↓ 调整：时间不够时，排在上面的任务先挑时段、少被压缩。排名不直接决定一天中的先后。</p>
+          <p id="rankingStatus" class="ranking-status muted"></p>
+          <ol id="rankingList" class="ranking-list"></ol>
+        </div>
       </section>
 
       <section class="panel wide plan-panel">

@@ -123,3 +123,9 @@ test('developer-facing OAuth settings live in a collapsible settings panel', () 
   assert.match(settings, /id="copyDebugButton"/);
   assert.doesNotMatch(settings, /id="connectButton"/);
 });
+
+test('task panel exposes a drag ranking list with a reset back to numeric priority', () => {
+  assert.match(html, /id="rankingList"/);
+  assert.match(html, /id="resetRankingButton"[^>]*>恢复按数字排序<\/button>/);
+  assert.match(html, /id="rankingOverrideNote"/);
+});

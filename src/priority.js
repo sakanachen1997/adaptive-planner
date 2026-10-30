@@ -36,7 +36,13 @@ function intervalStartHour(interval) {
 // Urgency is a user-entered field (integer 0–6), fully decoupled from the
 // deadline. The deadline is now purely a hard scheduling constraint (tasks must
 // finish before it) and no longer feeds into priority.
+// A manual ranking (see ranking.js) supplies priorityOverride; when present it
+// replaces the numeric formula entirely.
 export function calculatePriority(task) {
+  if (Number.isFinite(task.priorityOverride)) {
+    return task.priorityOverride;
+  }
+
   const importance = Number(task.importance ?? 0);
   const urgency = Number(task.urgency ?? 0);
   const desiredMinutes = Math.max(1, Number(task.desiredMinutes ?? 1));

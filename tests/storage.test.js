@@ -314,3 +314,15 @@ test('day tasks ignore corrupt storage and invalid entries', async () => {
   assert.deepEqual(loadDayTasks('2026-10-30'), [{ taskId: 'ok', taskName: 'A' }]);
   assert.equal(saveDayTasks('not-a-date', []), false);
 });
+
+test('day ranking is null until saved and can be cleared', async () => {
+  const { loadDayRanking, saveDayRanking } = await import('../src/storage.js');
+  installFakeLocalStorage();
+
+  assert.equal(loadDayRanking('2026-10-30'), null);
+  saveDayRanking('2026-10-30', ['b', 'a', 7]);
+  assert.deepEqual(loadDayRanking('2026-10-30'), ['b', 'a']);
+  assert.equal(loadDayRanking('2026-10-31'), null);
+  saveDayRanking('2026-10-30', null);
+  assert.equal(loadDayRanking('2026-10-30'), null);
+});
