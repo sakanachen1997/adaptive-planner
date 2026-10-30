@@ -35,7 +35,8 @@ test('task form fields have visible labels', () => {
 });
 
 test('quick add keeps only core fields visible and folds the rest into 更多选项', () => {
-  const advanced = html.slice(html.indexOf('id="taskAdvancedOptions"'), html.indexOf('</details>'));
+  const start = html.indexOf('id="taskAdvancedOptions"');
+  const advanced = html.slice(start, html.indexOf('</details>', start));
 
   for (const fieldName of ['importance', 'urgency', 'executionContext', 'energyDemand', 'fixed']) {
     assert.match(advanced, new RegExp(`name="${fieldName}"`), `${fieldName} should be inside 更多选项`);
@@ -112,4 +113,13 @@ test('page exposes one-click day availability synchronization and its state', ()
 test('page cache-busts static assets after behavior changes', () => {
   assert.match(html, /href="\.\/src\/styles\.css\?v=\d{8}-[a-z0-9-]+"/);
   assert.match(html, /src="\.\/src\/main\.js\?v=\d{8}-[a-z0-9-]+"/);
+});
+
+test('developer-facing OAuth settings live in a collapsible settings panel', () => {
+  const start = html.indexOf('id="settingsPanel"');
+  const settings = html.slice(start, html.indexOf('</details>', start));
+  assert.ok(start > 0);
+  assert.match(settings, /id="clientIdInput"/);
+  assert.match(settings, /id="copyDebugButton"/);
+  assert.doesNotMatch(settings, /id="connectButton"/);
 });

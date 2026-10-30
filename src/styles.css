@@ -78,7 +78,7 @@ p {
 
 .layout {
   display: grid;
-  grid-template-columns: 300px 340px minmax(0, 1fr);
+  grid-template-columns: 320px 340px minmax(0, 1fr);
   gap: 20px;
   padding: 28px clamp(20px, 3vw, 48px) 48px;
   max-width: 1920px;
@@ -274,7 +274,7 @@ input[type="checkbox"] {
 }
 
 #clientIdInput {
-  width: 200px;
+  width: 100%;
   background: var(--surface);
 }
 
@@ -306,7 +306,7 @@ input[type="checkbox"] {
 }
 
 #availableBlocks > .row {
-  padding: 12px;
+  padding: 10px;
   margin-bottom: 10px;
   border-radius: 9px;
   background: var(--surface);
@@ -314,7 +314,9 @@ input[type="checkbox"] {
 }
 
 #availableBlocks input[type="time"] {
-  flex: 1 1 95px;
+  flex: 1 1 120px;
+  padding-inline: 8px;
+  font-variant-numeric: tabular-nums;
 }
 
 #availableBlocks select {
@@ -584,6 +586,15 @@ input[type="checkbox"] {
     max-width: 760px;
   }
 
+  /* Narrow screens: today's plan first, then adding tasks, then setup. */
+  .plan-panel {
+    order: -2;
+  }
+
+  .task-panel {
+    order: -1;
+  }
+
   .topbar {
     flex-direction: column;
     align-items: stretch;
@@ -622,6 +633,63 @@ input[type="checkbox"] {
     min-height: 28px;
     left: 8px;
     right: 0;
+  }
+}
+
+.settings-panel {
+  position: relative;
+}
+
+.settings-panel > summary {
+  cursor: pointer;
+  padding: 9px 12px;
+  border: 1px solid #c9d1ca;
+  border-radius: 7px;
+  list-style: none;
+  color: var(--muted);
+}
+
+.settings-panel > summary::-webkit-details-marker {
+  display: none;
+}
+
+.settings-panel[open] > summary {
+  color: var(--text);
+}
+
+.settings-body {
+  position: absolute;
+  right: 0;
+  top: calc(100% + 8px);
+  z-index: 10;
+  display: grid;
+  gap: 10px;
+  width: min(360px, calc(100vw - 32px));
+  padding: 16px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--panel);
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.1);
+}
+
+.settings-body input {
+  width: 100%;
+}
+
+@media (max-width: 1000px) {
+  .settings-panel[open] {
+    flex-basis: 100%;
+  }
+
+  .settings-panel > summary {
+    display: inline-block;
+  }
+
+  .settings-body {
+    position: static;
+    width: auto;
+    margin-top: 8px;
+    box-shadow: none;
   }
 }
 

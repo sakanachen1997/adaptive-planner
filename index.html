@@ -14,9 +14,20 @@
         <p>按权重、精力、日历固定行程自动重排当天计划</p>
       </div>
       <div class="auth-panel">
-        <input id="clientIdInput" type="text" aria-label="Google OAuth Client ID" placeholder="Google OAuth Client ID" />
-        <button id="saveClientIdButton" type="button">保存 Client ID</button>
         <button id="connectButton" type="button">连接 Google Calendar</button>
+        <details id="settingsPanel" class="settings-panel">
+          <summary>设置</summary>
+          <div class="settings-body">
+            <label class="field">
+              <span>Google OAuth Client ID</span>
+              <input id="clientIdInput" type="text" aria-label="Google OAuth Client ID" placeholder="Google OAuth Client ID" />
+            </label>
+            <div class="row">
+              <button id="saveClientIdButton" type="button">保存 Client ID</button>
+              <button id="copyDebugButton" type="button">复制调试信息</button>
+            </div>
+          </div>
+        </details>
       </div>
     </header>
 
@@ -28,7 +39,6 @@
           <button id="loadCalendarButton" type="button">读取并显示日历</button>
           <button id="addDefaultBlocksButton" type="button">生成默认时间块</button>
           <button id="rescheduleButton" type="button">调度</button>
-          <button id="copyDebugButton" type="button">复制调试信息</button>
         </div>
         <label class="checkbox">
           <input id="scheduleFromNowToggle" type="checkbox" />

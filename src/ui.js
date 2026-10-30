@@ -3060,6 +3060,13 @@ function populateInitialValues() {
     clientIdInput.value = state.settings.clientId;
   }
 
+  // First run: open settings so the Client ID can be entered. Once saved, the
+  // developer-facing configuration stays out of the way.
+  const settingsPanel = element('settingsPanel');
+  if (settingsPanel) {
+    settingsPanel.open = !state.settings.clientId;
+  }
+
   if (planDateInput) {
     planDateInput.value = state.planDate;
   }
