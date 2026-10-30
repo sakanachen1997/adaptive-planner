@@ -7,6 +7,7 @@ import { scheduleDay } from '../src/scheduler.js';
 import {
   buildSyncOperations,
   syncOperationSummaryLines,
+  snappedDragMinute,
   calendarEventToPlanTask,
   calendarEventToProtectedBlock,
   calendarScheduleFromTasks,
@@ -2156,4 +2157,19 @@ test('sync preview lists each planned calendar change with task name and time', 
     '标记完成：晨跑 07:00–07:30',
     '删除：旧任务 15:00–16:00'
   ]);
+});
+
+test('timeline drag snaps to 5 minutes', () => {
+  assert.equal(snappedDragMinute(540, 0, 1), 540);
+  assert.equal(snappedDragMinute(540, 37, 1), 575);
+  assert.equal(snappedDragMinute(540, -12, 1.2), 525);
+});
+
+test('timeline bounds widen to available blocks so empty free time is draggable', () => {
+  const items = [{ startMinute: 540, endMinute: 600 }];
+  assert.deepEqual(timelineBounds(items), { startMinute: 540, endMinute: 660, totalMinutes: 120 });
+  assert.deepEqual(
+    timelineBounds(items, null, [{ startMinute: 540, endMinute: 1380 }]),
+    { startMinute: 540, endMinute: 1440, totalMinutes: 900 }
+  );
 });

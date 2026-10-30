@@ -492,6 +492,55 @@ input[type="checkbox"] {
   color: var(--muted);
 }
 
+.timeline-block[data-drag-task-id] {
+  cursor: grab;
+}
+
+.timeline-block.drag-armed,
+.timeline-block.dragging {
+  z-index: 5;
+  cursor: grabbing;
+  border-color: var(--accent);
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.16);
+}
+
+.timeline-block.dragging {
+  opacity: 0.92;
+}
+
+.timeline-anchored {
+  border-left-style: dashed;
+}
+
+.timeline-anchored strong::before {
+  content: "锚定";
+  margin-right: 6px;
+  padding: 0 5px;
+  border-radius: 4px;
+  background: var(--accent);
+  color: #fff;
+  font-size: 0.72rem;
+  font-weight: 500;
+  vertical-align: 1px;
+}
+
+.anchor-info {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin: 10px 0;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: var(--surface);
+  font-size: 0.9rem;
+}
+
+.anchor-info button {
+  min-height: 0;
+  padding: 3px 10px;
+}
+
 .timeline-block.selected {
   outline: 2px solid var(--accent);
   outline-offset: 2px;

@@ -146,8 +146,21 @@ function taskWithEffectiveWork(task, planDate, now) {
   return {
     ...task,
     effectiveMinimumMinutes,
-    effectiveDesiredMinutes
+    effectiveDesiredMinutes,
+    anchorAt: anchorDateTime(task, planDate)
   };
+}
+
+// Soft anchor from dragging a task on the timeline: "HH:MM" on the plan date.
+// User-fixed tasks keep their fixed time and ignore it.
+function anchorDateTime(task, planDate) {
+  if (!task.preferredStart || (task.fixed && !task.autoFixed)) {
+    return null;
+  }
+
+  return /^\d{2}:\d{2}$/.test(String(task.preferredStart))
+    ? `${planDate}T${task.preferredStart}:00`
+    : null;
 }
 
 function allocateDurations(tasks, capacityMinutes, now) {
@@ -293,7 +306,60 @@ function rankedCompatibleBlocks(task, blocks) {
     ));
 }
 
+// Place the whole duration as close to the anchor as possible: within each
+// compatible block the start is clamped to [block.start, latest start that
+// still fits before the block end and the deadline]; the nearest wins.
+function anchoredPlacement(task, minutes, blocks) {
+  if (!task.anchorAt || minutes <= 0) {
+    return null;
+  }
+
+  const anchorMs = toMillis(task.anchorAt);
+  const deadline = validDateTime(task.deadline);
+  let best = null;
+
+  for (const block of blocks) {
+    if (!contextCompatible(task, block)) {
+      continue;
+    }
+
+    const limit = deadline && deadline < block.end ? deadline : block.end;
+    const latestStartMs = toMillis(limit) - minutes * 60000;
+    const blockStartMs = toMillis(block.start);
+
+    if (latestStartMs < blockStartMs) {
+      continue;
+    }
+
+    const startMs = Math.min(Math.max(anchorMs, blockStartMs), latestStartMs);
+    const distance = Math.abs(startMs - anchorMs);
+
+    if (!best || distance < best.distance || (distance === best.distance && startMs < best.startMs)) {
+      best = { startMs, distance, block };
+    }
+  }
+
+  if (!best) {
+    return null;
+  }
+
+  const start = best.startMs === toMillis(best.block.start)
+    ? best.block.start
+    : addMinutes(best.block.start, Math.round((best.startMs - toMillis(best.block.start)) / 60000));
+  return segmentForTask(task, start, minutes);
+}
+
 function placeTask(task, minutes, blocks) {
+  const anchored = anchoredPlacement(task, minutes, blocks);
+
+  if (anchored) {
+    return {
+      segments: [anchored],
+      remaining: 0,
+      blocks: subtractIntervals(blocks.map((block) => ({ ...block })), [anchored])
+    };
+  }
+
   const segments = [];
   let remaining = minutes;
   let remainingBlocks = blocks.map((block) => ({ ...block }));
@@ -616,7 +682,56 @@ function recordLatestEnd(dependencyEnds, taskId, segments) {
   }
 }
 
-function attemptPlacement({
+// Anchored tasks softly reserve [anchor, anchor + allocation] so tasks placed
+// earlier in the order steer around them. A reservation is only honored when
+// it costs the other task no placed minutes; otherwise the full blocks win.
+function anchorReservations(tasks, allocations) {
+  return tasks
+    .filter((task) => task.anchorAt)
+    .map((task) => ({
+      taskId: task.taskId,
+      start: task.anchorAt,
+      end: addMinutes(task.anchorAt, allocations.get(task.taskId) ?? task.effectiveMinimumMinutes)
+    }));
+}
+
+function placedMinutes(result) {
+  return result.segments.reduce((sum, segment) => sum + segment.allocatedMinutes, 0);
+}
+
+function placeAroundReservations(task, minutes, blocks, reservations) {
+  const others = reservations.filter((reservation) => reservation.taskId !== task.taskId);
+  const full = placeTask(task, minutes, blocks);
+
+  if (others.length === 0) {
+    return full;
+  }
+
+  const avoiding = placeTask(task, minutes, subtractIntervals(blocks, others));
+  return placedMinutes(avoiding) >= placedMinutes(full) ? avoiding : full;
+}
+
+// Anchors are soft: if honoring them makes some task fail (e.g. the anchor
+// splits a block into fragments too small for others), place again without
+// anchors before reporting a failure.
+function attemptPlacement(args) {
+  const anchored = attemptPlacementOnce(args);
+
+  if (!anchored.failure || !args.flexibleTasks.some((task) => task.anchorAt)) {
+    return anchored;
+  }
+
+  const relaxed = attemptPlacementOnce({
+    ...args,
+    flexibleTasks: args.flexibleTasks.map((task) => (
+      task.anchorAt ? { ...task, anchorAt: null } : task
+    ))
+  });
+
+  return relaxed.failure ? anchored : relaxed;
+}
+
+function attemptPlacementOnce({
   fixedTasks,
   flexibleTasks,
   allocations,
@@ -678,11 +793,18 @@ function attemptPlacement({
     }
   }
 
+  const reservations = anchorReservations(flexibleTasks, allocations);
+
   for (const task of flexibleTasks) {
     const allocatedMinutes = allocations.get(task.taskId) ?? task.effectiveMinimumMinutes;
     const eligibleBlocks = blocksAfter(blocks, latestDependencyEnd(task, dependencyEnds));
     const candidateBlocks = candidateBlocksForTask(task, eligibleBlocks);
-    const failure = record(task, allocatedMinutes, candidateBlocks, placeTask(task, allocatedMinutes, eligibleBlocks));
+    const failure = record(
+      task,
+      allocatedMinutes,
+      candidateBlocks,
+      placeAroundReservations(task, allocatedMinutes, eligibleBlocks, reservations)
+    );
 
     if (failure) {
       return { scheduled, unscheduled, failure };

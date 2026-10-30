@@ -877,6 +877,10 @@ export function buildTimelineItems({
       endMinute: timelineMinutes(segment.end),
       status: segment.status,
       editable: Boolean(task),
+      anchored: Boolean(task?.preferredStart),
+      draggable: Boolean(task)
+        && segment.status === TASK_STATUSES.SCHEDULED
+        && !(task.fixed && !task.autoFixed),
       segmentNumber,
       segmentCount
     };
@@ -908,8 +912,11 @@ export function buildTimelineItems({
   ));
 }
 
-export function timelineBounds(items, markerTime = null) {
+// extraRanges (e.g. today's available blocks) widen the visible range so a
+// task can be dragged into free time that has no item yet.
+export function timelineBounds(timelineItems, markerTime = null, extraRanges = []) {
   const markerMinute = markerTime ? timelineMinutes(markerTime) : null;
+  const items = [...timelineItems, ...extraRanges];
 
   if (items.length === 0) {
     const defaultStart = 480;
@@ -1432,7 +1439,7 @@ function dismissUndoToast() {
 
 // Offer a short-lived undo for destructive task edits. Any later task change
 // dismisses it, so undo never overwrites newer work with a stale snapshot.
-function showUndoToast(text, previousTasks) {
+function showUndoToast(text, previousTasks, restoredMessage = '已撤销删除，任务已恢复并重新排入计划。') {
   dismissUndoToast();
 
   const node = document.createElement('div');
@@ -1446,7 +1453,7 @@ function showUndoToast(text, previousTasks) {
   button.addEventListener('click', () => {
     setTasks(previousTasks);
     recalculate();
-    showMessage('已撤销删除，任务已恢复并重新排入计划。');
+    showMessage(restoredMessage);
   });
   node.append(button);
   document.body.append(node);
@@ -1909,6 +1916,173 @@ function resetRanking() {
   showMessage('已恢复按重要性、紧迫度、外部承诺计算优先级。');
 }
 
+const DRAG_SNAP_MINUTES = 5;
+const DRAG_THRESHOLD_PX = 4;
+const TOUCH_HOLD_MS = 350;
+let suppressNextTimelineClick = false;
+let lastTimelineBounds = null;
+
+function minuteToTime(minute) {
+  const clamped = Math.max(0, Math.min(23 * 60 + 59, Math.round(minute)));
+  return `${String(Math.floor(clamped / 60)).padStart(2, '0')}:${String(clamped % 60).padStart(2, '0')}`;
+}
+
+export function snappedDragMinute(startMinute, deltaPx, minutesPerPx, snap = DRAG_SNAP_MINUTES) {
+  return Math.round((startMinute + deltaPx * minutesPerPx) / snap) * snap;
+}
+
+function setTaskAnchor(taskId, preferredStart) {
+  const existing = findLogicalTaskByKey(`task:${taskId}`);
+
+  if (!existing) {
+    showMessage('找不到要调整的任务。', true);
+    return;
+  }
+
+  const previousTasks = state.tasks;
+  const updated = createTask({
+    ...formInputForTask(existing),
+    taskId: existing.taskId,
+    status: existing.status,
+    preferredStart
+  });
+
+  setTasks(upsertLocalTask(state.tasks, {
+    ...updated,
+    planDate: existing.planDate ?? state.planDate,
+    taskLevelOverride: Boolean(existing.calendarEventId || existing.segmentId),
+    localOverride: Boolean(existing.calendarEventId || existing.segmentId)
+  }));
+  recalculate();
+
+  if (preferredStart) {
+    const placed = displayedSchedule()?.segments?.find((segment) => (
+      segment.taskId === taskId && segment.status === TASK_STATUSES.SCHEDULED
+    ));
+    const placedAt = placed?.start?.slice(11, 16);
+    showMessage(placedAt && placedAt !== preferredStart
+      ? `「${existing.taskName}」锚定在 ${preferredStart}，但该时段放不下，已放在最近的 ${placedAt}。`
+      : `「${existing.taskName}」已锚定在 ${preferredStart}，重新调度时会尽量保持。`);
+    showUndoToast(`已移动「${existing.taskName}」`, previousTasks, '已撤销移动。');
+  } else {
+    showMessage(`已取消「${existing.taskName}」的锚定，由系统自动安排。`);
+    showUndoToast(`已取消锚定「${existing.taskName}」`, previousTasks, '已恢复锚定。');
+  }
+}
+
+// Drag a task block vertically to anchor it at a new start time. Mouse/pen
+// drag immediately; touch needs a short hold so normal scrolling still works.
+function handleTimelinePointerDown(event) {
+  const node = event.target.closest?.('[data-drag-task-id]');
+  const view = node?.closest('.timeline-view');
+
+  if (!node || !view || event.button > 0) {
+    return;
+  }
+
+  const bounds = lastTimelineBounds;
+
+  if (!bounds) {
+    return;
+  }
+
+  const minutesPerPx = bounds.totalMinutes / view.getBoundingClientRect().height;
+  const startMinute = Number(node.dataset.startMinute);
+  const startY = event.clientY;
+  const originalTop = node.style.top;
+  const timeLabel = node.querySelector('span');
+  const originalLabel = timeLabel?.textContent ?? '';
+  const isTouch = event.pointerType === 'touch';
+  let armed = !isTouch;
+  let dragging = false;
+  let holdTimer = null;
+  let newMinute = startMinute;
+
+  const preventScroll = (touchEvent) => {
+    if (armed) {
+      touchEvent.preventDefault();
+    }
+  };
+
+  const cleanup = () => {
+    clearTimeout(holdTimer);
+    window.removeEventListener('pointermove', onMove);
+    window.removeEventListener('pointerup', onUp);
+    window.removeEventListener('pointercancel', onCancel);
+    window.removeEventListener('touchmove', preventScroll);
+    node.classList.remove('dragging', 'drag-armed');
+  };
+
+  const onMove = (moveEvent) => {
+    const deltaPx = moveEvent.clientY - startY;
+
+    if (!armed) {
+      if (Math.abs(deltaPx) > 8) {
+        cleanup();
+      }
+      return;
+    }
+
+    if (!dragging && Math.abs(deltaPx) < DRAG_THRESHOLD_PX) {
+      return;
+    }
+
+    dragging = true;
+    node.classList.add('dragging');
+    newMinute = Math.max(
+      bounds.startMinute,
+      Math.min(bounds.endMinute - DRAG_SNAP_MINUTES, snappedDragMinute(startMinute, deltaPx, minutesPerPx))
+    );
+    node.style.top = `${((newMinute - bounds.startMinute) / bounds.totalMinutes) * 100}%`;
+    if (timeLabel) {
+      timeLabel.textContent = `移到 ${minuteToTime(newMinute)}`;
+    }
+  };
+
+  const onCancel = () => {
+    cleanup();
+    node.style.top = originalTop;
+    if (timeLabel) {
+      timeLabel.textContent = originalLabel;
+    }
+  };
+
+  const onUp = () => {
+    cleanup();
+
+    if (!dragging) {
+      return;
+    }
+
+    suppressNextTimelineClick = true;
+    setTimeout(() => {
+      suppressNextTimelineClick = false;
+    }, 0);
+
+    if (newMinute === startMinute) {
+      onCancel();
+      return;
+    }
+
+    state.selectedTimelineItemId = null;
+    setTaskAnchor(node.dataset.dragTaskId, minuteToTime(newMinute));
+  };
+
+  if (isTouch) {
+    holdTimer = setTimeout(() => {
+      armed = true;
+      node.classList.add('drag-armed');
+    }, TOUCH_HOLD_MS);
+  } else {
+    event.preventDefault();
+  }
+
+  window.addEventListener('pointermove', onMove);
+  window.addEventListener('pointerup', onUp);
+  window.addEventListener('pointercancel', onCancel);
+  window.addEventListener('touchmove', preventScroll, { passive: false });
+}
+
 function renderConflictPanel() {
   const panel = element('conflictPanel');
 
@@ -2019,10 +2193,21 @@ function renderTimelineItem(parent, item, bounds) {
     node.classList.add('timeline-compact');
   }
 
+  if (item.anchored) {
+    node.classList.add('timeline-anchored');
+  }
+
+  if (item.draggable) {
+    node.dataset.dragTaskId = item.segment.taskId;
+    node.dataset.startMinute = String(item.startMinute);
+  }
+
   node.style.top = `${top}%`;
   node.style.height = `${height}%`;
   node.dataset.timelineItemId = item.id;
-  node.title = `${item.title}\n${timeRange}`;
+  node.title = `${item.title}\n${timeRange}`
+    + (item.anchored ? `\n锚定 ${item.task.preferredStart}` : '')
+    + (item.draggable ? '\n拖动可调整时间（触屏长按后拖动）' : '');
   appendText(node, item.title, 'strong');
   appendText(node, timeRange, 'span');
   parent.append(node);
@@ -2233,6 +2418,27 @@ function renderTimelineTaskDetail(parent, item) {
     return;
   }
 
+  if (task.preferredStart && segment.status === TASK_STATUSES.SCHEDULED) {
+    const anchorRow = document.createElement('div');
+    anchorRow.className = 'anchor-info';
+    const placedAt = item.start.slice(11, 16);
+    appendText(
+      anchorRow,
+      placedAt === task.preferredStart || item.segmentNumber > 1
+        ? `已锚定在 ${task.preferredStart}，重新调度时会尽量保持。`
+        : `锚定在 ${task.preferredStart}，但该时段放不下（被占用、不在可用时间、晚于截止，或会让其他任务放不下），已放在最近的位置。`,
+      'span'
+    );
+    const clearAnchor = document.createElement('button');
+    clearAnchor.type = 'button';
+    clearAnchor.textContent = '取消锚定';
+    clearAnchor.dataset.clearAnchorTaskId = task.taskId;
+    anchorRow.append(clearAnchor);
+    parent.append(anchorRow);
+  } else if (item.draggable) {
+    appendText(parent, '提示：在时间轴上拖动任务块可以把它锚定到新的时间（触屏长按后拖动）。', 'p').className = 'muted';
+  }
+
   const actions = document.createElement('div');
   actions.className = 'schedule-actions';
   appendEditButton(actions, task);
@@ -2298,7 +2504,14 @@ function renderSchedule() {
   });
   const timelineNow = now.slice(0, 10) === state.planDate ? now : null;
   const selectedItem = items.find((item) => item.id === state.selectedTimelineItemId) ?? null;
-  const bounds = timelineBounds(items, timelineNow);
+  const availabilityRanges = items.length === 0
+    ? []
+    : concreteAvailableBlocks().map((block) => ({
+      startMinute: timelineMinutes(block.start),
+      endMinute: Math.min(1440, timelineMinutes(block.end) || 1440)
+    }));
+  const bounds = timelineBounds(items, timelineNow, availabilityRanges);
+  lastTimelineBounds = bounds;
   const layout = document.createElement('div');
   const timelineView = document.createElement('div');
   const timelineDetail = document.createElement('div');
@@ -2807,7 +3020,8 @@ function editedTaskFromForm(form) {
   const updated = createTask({
     ...taskInputFromForm(form),
     taskId: existing.taskId,
-    status: existing.status
+    status: existing.status,
+    preferredStart: existing.preferredStart ?? null
   });
 
   return {
@@ -3091,6 +3305,18 @@ function saveActualTimes(key, editor) {
 }
 
 function handleScheduleClick(event) {
+  if (suppressNextTimelineClick) {
+    suppressNextTimelineClick = false;
+    return;
+  }
+
+  const clearAnchorTaskId = event.target.dataset.clearAnchorTaskId;
+
+  if (clearAnchorTaskId) {
+    setTaskAnchor(clearAnchorTaskId, null);
+    return;
+  }
+
   const timelineItemId = event.target.dataset.timelineItemId
     ?? event.target.closest?.('[data-timeline-item-id]')?.dataset.timelineItemId;
 
@@ -3181,6 +3407,13 @@ function wireEvents() {
     recalculate();
   });
   element('scheduleList')?.addEventListener('click', handleScheduleClick);
+  element('scheduleList')?.addEventListener('pointerdown', handleTimelinePointerDown);
+  document.addEventListener('click', (event) => {
+    const settings = element('settingsPanel');
+    if (settings?.open && !settings.contains(event.target)) {
+      settings.open = false;
+    }
+  });
   element('rankingList')?.addEventListener('click', handleRankingClick);
   element('rankingList')?.addEventListener('pointerdown', handleRankingPointerDown);
   element('resetRankingButton')?.addEventListener('click', resetRanking);
