@@ -1,5 +1,6 @@
 const SETTINGS_KEY = 'adaptivePlanner.settings.v1';
 const TASK_PRESETS_KEY = 'adaptivePlanner.taskPresets.v1';
+const DAY_TASKS_KEY = 'adaptivePlanner.dayTasks.v1';
 export const MAX_TASK_PRESETS = 10;
 
 const DEFAULT_BLOCKS = Object.freeze([
@@ -189,6 +190,68 @@ export function saveTaskPresets(presets) {
 
   try {
     storage.setItem(TASK_PRESETS_KEY, JSON.stringify(presets));
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+const PLAN_DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
+
+function isValidStoredTask(task) {
+  return isPlainObject(task)
+    && typeof task.taskId === 'string'
+    && task.taskId.trim() !== ''
+    && typeof task.taskName === 'string';
+}
+
+function readDayTaskMap(storage) {
+  try {
+    const raw = storage.getItem(DAY_TASKS_KEY);
+    if (!raw) {
+      return {};
+    }
+
+    const parsed = JSON.parse(raw);
+    return isPlainObject(parsed) ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+// Local (not yet published) tasks are kept per plan date so a page reload
+// does not lose work. Corrupt entries are dropped instead of failing the app.
+export function loadDayTasks(planDate) {
+  const storage = getLocalStorage();
+  if (!storage || !PLAN_DATE_PATTERN.test(String(planDate))) {
+    return [];
+  }
+
+  const tasks = readDayTaskMap(storage)[planDate];
+  if (!Array.isArray(tasks)) {
+    return [];
+  }
+
+  return tasks
+    .filter(isValidStoredTask)
+    .map((task) => structuredClone(task));
+}
+
+export function saveDayTasks(planDate, tasks) {
+  const storage = getLocalStorage();
+  if (!storage || !PLAN_DATE_PATTERN.test(String(planDate)) || !Array.isArray(tasks)) {
+    return false;
+  }
+
+  const map = readDayTaskMap(storage);
+  if (tasks.length === 0) {
+    delete map[planDate];
+  } else {
+    map[planDate] = tasks.filter(isValidStoredTask);
+  }
+
+  try {
+    storage.setItem(DAY_TASKS_KEY, JSON.stringify(map));
     return true;
   } catch {
     return false;

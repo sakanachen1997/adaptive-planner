@@ -22,8 +22,10 @@ import { calculatePriority } from './priority.js';
 import { addMinutes, combineDateAndTime, minutesBetween, normalizeDateTime } from './time.js';
 import {
   MAX_TASK_PRESETS,
+  loadDayTasks,
   loadSettings,
   loadTaskPresets,
+  saveDayTasks,
   saveSettings,
   saveTaskPresets
 } from './storage.js';
@@ -1346,13 +1348,14 @@ export function buildSyncOperations({
 
 function createState() {
   const settings = loadSettings();
+  const planDate = localDateString();
 
   return {
     settings,
     taskPresets: loadTaskPresets(),
-    planDate: localDateString(),
+    planDate,
     calendarEvents: [],
-    tasks: [],
+    tasks: loadDayTasks(planDate),
     availableBlocks: settings.defaultBlocks
       .filter((block) => block.enabled)
       .map(blockFromSetting),
@@ -1367,6 +1370,11 @@ function createState() {
 }
 
 let state = createState();
+
+function setTasks(tasks) {
+  state.tasks = tasks;
+  saveDayTasks(state.planDate, state.tasks);
+}
 
 function displayedSchedule() {
   return state.draftSchedule ?? state.calendarSchedule;
@@ -2531,7 +2539,7 @@ function submitTaskForm(event) {
 
   try {
     if (state.editingTaskKey) {
-      state.tasks = upsertLocalTask(state.tasks, editedTaskFromForm(event.currentTarget));
+      setTasks(upsertLocalTask(state.tasks, editedTaskFromForm(event.currentTarget)));
       resetTaskForm();
       recalculate();
       showMessage('任务已保存。');
@@ -2539,7 +2547,7 @@ function submitTaskForm(event) {
     }
 
     const task = createTask(taskInputFromForm(event.currentTarget));
-    state.tasks = upsertLocalTask(state.tasks, task);
+    setTasks(upsertLocalTask(state.tasks, task));
     resetTaskForm();
     recalculate();
     showMessage('任务已添加。');
@@ -2570,7 +2578,7 @@ function markTaskCompleted(task, suggestedStart = null) {
   const actualEnd = localNowString();
   const actualStart = defaultActualStart(task, suggestedStart, actualEnd);
 
-  state.tasks = completeTaskInList(state.tasks, task, { actualStart, actualEnd });
+  setTasks(completeTaskInList(state.tasks, task, { actualStart, actualEnd }));
   recalculate();
   showMessage('任务已标记完成。可在“已完成”列表修正实际开始/结束时间；保存后会按真实占用时间重新调度。');
   return true;
@@ -2740,7 +2748,7 @@ function removeTask(key) {
     return;
   }
 
-  state.tasks = removeTaskForReschedule(state.tasks, task);
+  setTasks(removeTaskForReschedule(state.tasks, task));
 
   if (state.editingTaskKey === key) {
     resetTaskForm();
@@ -2760,7 +2768,7 @@ function uncompleteTask(key) {
     return;
   }
 
-  state.tasks = uncompleteTaskInList(state.tasks, task);
+  setTasks(uncompleteTaskInList(state.tasks, task));
   recalculate();
   showMessage('已恢复为未完成，已重新排入计划。');
 }
@@ -2785,10 +2793,10 @@ function saveActualTimes(key, editor) {
   }
 
   try {
-    state.tasks = completeTaskInList(state.tasks, task, {
+    setTasks(completeTaskInList(state.tasks, task, {
       actualStart: editor?.querySelector('input[name="actualStart"]')?.value,
       actualEnd: editor?.querySelector('input[name="actualEnd"]')?.value
-    });
+    }));
     recalculate();
     showMessage('实际完成时间已保存，并已按修正后的真实占用时间重新调度。');
   } catch (error) {
@@ -2886,6 +2894,7 @@ function wireEvents() {
       state,
       event.target.value || localDateString()
     );
+    state.tasks = loadDayTasks(state.planDate);
     resetTaskForm();
     recalculate();
   });
@@ -2921,5 +2930,10 @@ export function initApp() {
   setTaskFormMode(null);
   renderAvailableBlocks();
   wireEvents();
-  renderSchedule();
+
+  if (state.tasks.length > 0) {
+    recalculate();
+  } else {
+    renderSchedule();
+  }
 }

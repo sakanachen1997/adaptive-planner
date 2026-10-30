@@ -281,3 +281,36 @@ test('task preset loading drops malformed entries without losing valid presets',
 
   assert.deepEqual(loadTaskPresets(), [valid]);
 });
+
+test('day tasks round-trip per plan date and survive reload', async () => {
+  const { loadDayTasks, saveDayTasks } = await import('../src/storage.js');
+  installFakeLocalStorage();
+  const task = { taskId: 't1', taskName: '写报告', desiredMinutes: 60, dependencyTaskIds: [] };
+
+  assert.equal(saveDayTasks('2026-10-30', [task]), true);
+  assert.deepEqual(loadDayTasks('2026-10-30'), [task]);
+  assert.deepEqual(loadDayTasks('2026-10-31'), []);
+
+  const loaded = loadDayTasks('2026-10-30');
+  loaded[0].taskName = 'changed';
+  assert.equal(loadDayTasks('2026-10-30')[0].taskName, '写报告');
+
+  saveDayTasks('2026-10-31', [{ taskId: 't2', taskName: '健身' }]);
+  saveDayTasks('2026-10-30', []);
+  assert.deepEqual(loadDayTasks('2026-10-30'), []);
+  assert.equal(loadDayTasks('2026-10-31').length, 1);
+});
+
+test('day tasks ignore corrupt storage and invalid entries', async () => {
+  const { loadDayTasks, saveDayTasks } = await import('../src/storage.js');
+  installFakeLocalStorage();
+
+  globalThis.localStorage.setItem('adaptivePlanner.dayTasks.v1', '{not json');
+  assert.deepEqual(loadDayTasks('2026-10-30'), []);
+
+  globalThis.localStorage.setItem('adaptivePlanner.dayTasks.v1', JSON.stringify({
+    '2026-10-30': [{ taskId: 'ok', taskName: 'A' }, { taskName: 'missing id' }, null]
+  }));
+  assert.deepEqual(loadDayTasks('2026-10-30'), [{ taskId: 'ok', taskName: 'A' }]);
+  assert.equal(saveDayTasks('not-a-date', []), false);
+});
