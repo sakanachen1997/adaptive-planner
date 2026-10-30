@@ -75,6 +75,12 @@ const ORDER_PREFERENCE_OPTIONS = Object.freeze([
   { value: ORDER_PREFERENCES.ANY, label: '不限' }
 ]);
 
+// Blocks shorter than this render on one line ("名称 · 时间") so 15–30 minute
+// tasks stay readable instead of clipping a two-line layout.
+const COMPACT_TIMELINE_MINUTES = 45;
+const TIMELINE_PX_PER_MINUTE = 1.2;
+const UNDO_TIMEOUT_MS = 8000;
+
 const DEFAULT_MESSAGE = '先生成可用时间块并添加任务，然后点击调度。';
 export const MAX_CUSTOM_BLOCKS = 8;
 let customContextSequence = 0;
@@ -1346,6 +1352,37 @@ export function buildSyncOperations({
   return result;
 }
 
+function operationTimeRange(start, end) {
+  const from = start ? normalizeDateTime(start).slice(11, 16) : '';
+  const to = end ? normalizeDateTime(end).slice(11, 16) : '';
+  return from && to ? `${from}–${to}` : '';
+}
+
+export function syncOperationSummaryLines(operations) {
+  const line = (label, name, range) => `${label}：${name ?? '未命名任务'}${range ? ` ${range}` : ''}`;
+  const updateLabel = (operation) => (
+    operation.segment?.status === TASK_STATUSES.COMPLETED ? '标记完成' : '更新'
+  );
+
+  return [
+    ...operations.creates.map((operation) => line(
+      '新建',
+      operation.segment?.taskName ?? operation.task?.taskName,
+      operationTimeRange(operation.segment?.start, operation.segment?.end)
+    )),
+    ...operations.updates.map((operation) => line(
+      updateLabel(operation),
+      operation.segment?.taskName ?? operation.task?.taskName,
+      operationTimeRange(operation.segment?.start, operation.segment?.end)
+    )),
+    ...operations.deletes.map((operation) => line(
+      '删除',
+      operation.task?.taskName,
+      operationTimeRange(operation.task?.plannedStart, operation.task?.plannedEnd)
+    ))
+  ];
+}
+
 function createState() {
   const settings = loadSettings();
   const planDate = localDateString();
@@ -1371,9 +1408,49 @@ function createState() {
 
 let state = createState();
 
+let pendingUndo = null;
+
 function setTasks(tasks) {
+  dismissUndoToast();
   state.tasks = tasks;
   saveDayTasks(state.planDate, state.tasks);
+}
+
+function dismissUndoToast() {
+  if (!pendingUndo) {
+    return;
+  }
+
+  clearTimeout(pendingUndo.timer);
+  pendingUndo.node.remove();
+  pendingUndo = null;
+}
+
+// Offer a short-lived undo for destructive task edits. Any later task change
+// dismisses it, so undo never overwrites newer work with a stale snapshot.
+function showUndoToast(text, previousTasks) {
+  dismissUndoToast();
+
+  const node = document.createElement('div');
+  const button = document.createElement('button');
+
+  node.className = 'undo-toast';
+  node.setAttribute('role', 'status');
+  appendText(node, text, 'span');
+  button.type = 'button';
+  button.textContent = '撤销';
+  button.addEventListener('click', () => {
+    setTasks(previousTasks);
+    recalculate();
+    showMessage('已撤销删除，任务已恢复并重新排入计划。');
+  });
+  node.append(button);
+  document.body.append(node);
+
+  pendingUndo = {
+    node,
+    timer: setTimeout(dismissUndoToast, UNDO_TIMEOUT_MS)
+  };
 }
 
 function displayedSchedule() {
@@ -1797,11 +1874,18 @@ function renderTimelineItem(parent, item, bounds) {
     `timeline-${item.status}`,
     item.id === state.selectedTimelineItemId ? 'selected' : ''
   ].filter(Boolean).join(' ');
+  const timeRange = `${item.start.slice(11, 16)} - ${item.end.slice(11, 16)}`;
+
+  if (item.endMinute - item.startMinute < COMPACT_TIMELINE_MINUTES) {
+    node.classList.add('timeline-compact');
+  }
+
   node.style.top = `${top}%`;
-  node.style.height = `${Math.max(3, height)}%`;
+  node.style.height = `${height}%`;
   node.dataset.timelineItemId = item.id;
+  node.title = `${item.title}\n${timeRange}`;
   appendText(node, item.title, 'strong');
-  appendText(node, `${item.start.slice(11, 16)} - ${item.end.slice(11, 16)}`, 'span');
+  appendText(node, timeRange, 'span');
   parent.append(node);
 }
 
@@ -1825,6 +1909,7 @@ function renderCurrentTimeMarker(parent, now, bounds) {
 
 function renderTimelineView(parent, items, bounds, now = null) {
   parent.className = 'timeline-view';
+  parent.style.height = `${Math.max(720, Math.round(bounds.totalMinutes * TIMELINE_PX_PER_MINUTE))}px`;
   clear(parent);
 
   for (const hour of timelineHourLabels(bounds)) {
@@ -2119,8 +2204,23 @@ function renderSyncPreview() {
     planDate: state.planDate
   });
 
-  target.textContent = `发布预览：将创建 ${state.lastSyncOperations.creates.length} 个 Plan 事件，更新 ${state.lastSyncOperations.updates.length} 个 Plan 事件，删除 ${state.lastSyncOperations.deletes.length} 个 Plan 事件。普通 Google Calendar 事件不会被修改。`;
-  target.className = 'muted';
+  clear(target);
+  target.className = 'sync-preview';
+  appendText(
+    target,
+    `发布预览：将创建 ${state.lastSyncOperations.creates.length} 个 Plan 事件，更新 ${state.lastSyncOperations.updates.length} 个 Plan 事件，删除 ${state.lastSyncOperations.deletes.length} 个 Plan 事件。普通 Google Calendar 事件不会被修改。`,
+    'p'
+  ).className = 'muted';
+
+  const lines = syncOperationSummaryLines(state.lastSyncOperations);
+  if (lines.length > 0) {
+    const list = document.createElement('ul');
+    list.className = 'sync-preview-list';
+    for (const text of lines) {
+      appendText(list, text, 'li');
+    }
+    target.append(list);
+  }
 }
 
 function recalculate() {
@@ -2791,6 +2891,7 @@ function removeTask(key) {
     return;
   }
 
+  const previousTasks = state.tasks;
   setTasks(removeTaskForReschedule(state.tasks, task));
 
   if (state.editingTaskKey === key) {
@@ -2801,6 +2902,7 @@ function removeTask(key) {
   showMessage(task.calendarEventId
     ? '任务已跳过并重排。下次同步时会删除对应的日历事件。'
     : '任务已删除并重排。');
+  showUndoToast(`已删除「${task.taskName}」`, previousTasks);
 }
 
 function uncompleteTask(key) {
@@ -2939,6 +3041,7 @@ function wireEvents() {
   });
   element('scheduleList')?.addEventListener('click', handleScheduleClick);
   element('planDateInput')?.addEventListener('change', (event) => {
+    dismissUndoToast();
     state = resetCalendarStateForDateChange(
       state,
       event.target.value || localDateString()

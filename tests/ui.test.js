@@ -6,6 +6,7 @@ import { buildDayAvailabilityMetadata, dayAvailabilityCalendarBody } from '../sr
 import { scheduleDay } from '../src/scheduler.js';
 import {
   buildSyncOperations,
+  syncOperationSummaryLines,
   calendarEventToPlanTask,
   calendarEventToProtectedBlock,
   calendarScheduleFromTasks,
@@ -2137,4 +2138,22 @@ test('advanced options auto-open only for non-default values', () => {
   assert.equal(hasNonDefaultAdvancedInput({ ...base, dependencyTaskIds: ['x'] }), true);
   assert.equal(hasNonDefaultAdvancedInput({ ...base, executionContext: 'home' }), true);
   assert.equal(hasNonDefaultAdvancedInput({ ...base, fixed: true }), true);
+});
+
+test('sync preview lists each planned calendar change with task name and time', () => {
+  const lines = syncOperationSummaryLines({
+    creates: [{ segment: { taskName: '写报告', start: '2026-10-30T09:00:00', end: '2026-10-30T11:00:00' } }],
+    updates: [
+      { segment: { taskName: '回邮件', start: '2026-10-30T11:00:00', end: '2026-10-30T11:30:00' }, eventId: 'e1' },
+      { segment: { taskName: '晨跑', status: 'completed', start: '2026-10-30T07:00:00', end: '2026-10-30T07:30:00' }, eventId: 'e2' }
+    ],
+    deletes: [{ eventId: 'e3', task: { taskName: '旧任务', plannedStart: '2026-10-30T15:00:00', plannedEnd: '2026-10-30T16:00:00' } }]
+  });
+
+  assert.deepEqual(lines, [
+    '新建：写报告 09:00–11:00',
+    '更新：回邮件 11:00–11:30',
+    '标记完成：晨跑 07:00–07:30',
+    '删除：旧任务 15:00–16:00'
+  ]);
 });
