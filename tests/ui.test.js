@@ -25,6 +25,8 @@ import {
   resolveScheduleStart,
   uncompleteTaskInList,
   taskInputFromFormData,
+  defaultMinimumMinutes,
+  hasNonDefaultAdvancedInput,
   taskPresetFromTaskInput,
   formInputForTask,
   shouldShowRecoveryActions,
@@ -2107,4 +2109,32 @@ test('rescheduled split sync keeps distinct segment ids and edited dependency me
   ]);
   assert.ok(metadata.every((item) => item.taskName === '新名称'));
   assert.ok(metadata.every((item) => item.dependencyTaskIds[0] === 'research'));
+});
+
+test('quick add: blank minimum defaults to half of desired, rounded to 5', () => {
+  const input = taskInputFromFormData(new Map([
+    ['taskName', '写报告'],
+    ['taskType', '自定义'],
+    ['desiredMinutes', '90'],
+    ['minimumMinutes', ''],
+    ['importance', '3'],
+    ['urgency', '0'],
+    ['minSegmentMinutes', '20'],
+    ['externalCommitment', '1']
+  ]));
+
+  assert.equal(input.desiredMinutes, '90');
+  assert.equal(input.minimumMinutes, '45');
+  assert.equal(defaultMinimumMinutes('7'), '5');
+  assert.equal(defaultMinimumMinutes('3'), '3');
+  assert.equal(defaultMinimumMinutes('120'), '60');
+});
+
+test('advanced options auto-open only for non-default values', () => {
+  const base = formInputForTask({ taskName: 'A', taskType: '编码工作', importance: 3, urgency: 0 });
+  assert.equal(hasNonDefaultAdvancedInput(base), false);
+  assert.equal(hasNonDefaultAdvancedInput({ ...base, importance: '5' }), true);
+  assert.equal(hasNonDefaultAdvancedInput({ ...base, dependencyTaskIds: ['x'] }), true);
+  assert.equal(hasNonDefaultAdvancedInput({ ...base, executionContext: 'home' }), true);
+  assert.equal(hasNonDefaultAdvancedInput({ ...base, fixed: true }), true);
 });

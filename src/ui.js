@@ -2308,6 +2308,37 @@ function requiredFormValue(data, fieldName) {
   return value;
 }
 
+// Quick add: when the minimum is left blank, allow compressing to half of the
+// desired duration (rounded to 5 minutes, at least 5, never above desired).
+export function defaultMinimumMinutes(desiredMinutes) {
+  const desired = Number(desiredMinutes);
+
+  if (!Number.isFinite(desired) || desired <= 0) {
+    return String(desiredMinutes);
+  }
+
+  const half = Math.max(5, Math.round(desired / 2 / 5) * 5);
+  return String(Math.min(desired, half));
+}
+
+// Whether a form input carries values that live in the collapsed
+// "更多选项" section and differ from the defaults of its task type.
+export function hasNonDefaultAdvancedInput(input) {
+  const defaults = TASK_TYPE_DEFAULTS[input.taskType] ?? TASK_TYPE_DEFAULTS['自定义'];
+
+  return String(input.importance ?? '3') !== '3'
+    || String(input.urgency ?? '0') !== '0'
+    || (input.dependencyTaskIds ?? []).length > 0
+    || Boolean(input.fixed)
+    || (input.executionContext ?? defaults.executionContext) !== defaults.executionContext
+    || (input.energyDemand ?? defaults.energyDemand) !== defaults.energyDemand
+    || (input.physicalDemand ?? defaults.physicalDemand) !== defaults.physicalDemand
+    || (input.orderPreference ?? defaults.orderPreference) !== defaults.orderPreference
+    || Boolean(input.splittable ?? defaults.splittable) !== Boolean(defaults.splittable)
+    || String(input.minSegmentMinutes ?? defaults.minSegmentMinutes) !== String(defaults.minSegmentMinutes)
+    || String(input.externalCommitment ?? defaults.externalCommitment) !== String(defaults.externalCommitment);
+}
+
 export function taskInputFromFormData(data) {
   const fixed = data.get('fixed') === 'on';
   const fixedStart = data.get('fixedStart');
@@ -2321,7 +2352,9 @@ export function taskInputFromFormData(data) {
     minimumMinutes = fixedMinutes;
   } else {
     desiredMinutes = requiredFormValue(data, 'desiredMinutes');
-    minimumMinutes = requiredFormValue(data, 'minimumMinutes');
+    minimumMinutes = String(minimumMinutes ?? '').trim() === ''
+      ? defaultMinimumMinutes(desiredMinutes)
+      : minimumMinutes;
   }
 
   return {
@@ -2392,6 +2425,11 @@ function fillTaskForm(task) {
   form.elements.fixed.checked = input.fixed;
   form.elements.fixedStart.value = input.fixedStart;
   form.elements.fixedEnd.value = input.fixedEnd;
+
+  const advanced = element('taskAdvancedOptions');
+  if (advanced) {
+    advanced.open = hasNonDefaultAdvancedInput(input);
+  }
 }
 
 export function taskPresetFromTaskInput(input, id) {
@@ -2484,6 +2522,11 @@ function resetTaskForm() {
   renderDependencyOptions();
   applyTaskTypePreset(form?.elements.taskType.value);
   setTaskFormMode(null);
+
+  const advanced = element('taskAdvancedOptions');
+  if (advanced) {
+    advanced.open = false;
+  }
 }
 
 function findEditableTaskByKey(key) {
@@ -2876,6 +2919,12 @@ function wireEvents() {
   element('availableBlocks')?.addEventListener('change', handleAvailableBlockInput);
   element('availableBlocks')?.addEventListener('click', handleAvailableBlockClick);
   element('taskForm')?.addEventListener('submit', submitTaskForm);
+  element('taskForm')?.addEventListener('invalid', (event) => {
+    const advanced = element('taskAdvancedOptions');
+    if (advanced && advanced.contains(event.target)) {
+      advanced.open = true;
+    }
+  }, true);
   element('saveTaskPresetButton')?.addEventListener('click', saveCurrentTaskAsPreset);
   element('taskPresetList')?.addEventListener('click', handleTaskPresetClick);
   element('deadlineTodayButton')?.addEventListener('click', fillDeadlineToday);

@@ -111,6 +111,26 @@ p {
   grid-column: 1 / -1;
 }
 
+.advanced-options {
+  border-top: 1px solid var(--border);
+  padding-top: 12px;
+}
+
+.advanced-options > summary {
+  cursor: pointer;
+  font-weight: 600;
+  list-style-position: inside;
+}
+
+.advanced-options > summary small {
+  font-weight: 400;
+  margin-left: 6px;
+}
+
+.advanced-options > .form-grid {
+  margin-top: 14px;
+}
+
 .task-presets {
   margin-bottom: 14px;
   padding-bottom: 14px;

@@ -8,10 +8,10 @@ test('task form fields have visible labels', () => {
   const requiredLabels = [
     '任务名',
     '任务类型',
-    '想要时长',
-    '最小时长',
-    '重要性',
-    '紧迫度（0–6，手动填写，与截止时间无关）',
+    '想要时长（分钟）',
+    '最小时长（分钟）',
+    '重要性（1–5）',
+    '紧迫度（0–6）',
     '截止时间（任务须在此之前完成）',
     '执行场景',
     '精力需求',
@@ -31,6 +31,17 @@ test('task form fields have visible labels', () => {
       new RegExp(`<span[^>]*>${label}</span>`),
       `missing visible label: ${label}`
     );
+  }
+});
+
+test('quick add keeps only core fields visible and folds the rest into 更多选项', () => {
+  const advanced = html.slice(html.indexOf('id="taskAdvancedOptions"'), html.indexOf('</details>'));
+
+  for (const fieldName of ['importance', 'urgency', 'executionContext', 'energyDemand', 'fixed']) {
+    assert.match(advanced, new RegExp(`name="${fieldName}"`), `${fieldName} should be inside 更多选项`);
+  }
+  for (const fieldName of ['taskName', 'taskType', 'desiredMinutes', 'minimumMinutes', 'deadline']) {
+    assert.doesNotMatch(advanced, new RegExp(`name="${fieldName}"`), `${fieldName} should stay visible`);
   }
 });
 

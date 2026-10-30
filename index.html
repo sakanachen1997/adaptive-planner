@@ -64,20 +64,12 @@
             <select name="taskType"></select>
           </label>
           <label class="field">
-            <span>想要时长</span>
+            <span>想要时长（分钟）</span>
             <input name="desiredMinutes" type="number" min="1" />
           </label>
           <label class="field">
-            <span>最小时长</span>
-            <input name="minimumMinutes" type="number" min="1" />
-          </label>
-          <label class="field">
-            <span>重要性</span>
-            <input name="importance" required type="number" min="1" max="5" value="3" />
-          </label>
-          <label class="field field-wide">
-            <span>紧迫度（0–6，手动填写，与截止时间无关）</span>
-            <input name="urgency" required type="number" min="0" max="6" value="0" />
+            <span>最小时长（分钟）</span>
+            <input name="minimumMinutes" type="number" min="1" placeholder="留空 = 想要的一半" />
           </label>
           <label class="field field-wide">
             <span>截止时间（任务须在此之前完成）</span>
@@ -86,45 +78,58 @@
               <button id="deadlineTodayButton" type="button">今日</button>
             </div>
           </label>
-          <label class="field">
-            <span>执行场景</span>
-            <select name="executionContext"></select>
-          </label>
-          <label class="field">
-            <span>精力需求</span>
-            <select name="energyDemand"></select>
-          </label>
-          <label class="field">
-            <span>体力需求</span>
-            <select name="physicalDemand"></select>
-          </label>
-          <label class="field">
-            <span>顺序偏好</span>
-            <select name="orderPreference"></select>
-          </label>
-          <div class="field field-wide">
-            <span>前置任务（可多选）</span>
-            <div id="dependencyTaskChoices" class="checkbox-list"></div>
-            <small class="muted">直接勾选一个或多个任务；这些任务的所有分段完成后，才会开始当前任务。</small>
-          </div>
-          <label class="checkbox"><input name="splittable" type="checkbox" /> <span>是否可拆分</span></label>
-          <label class="field">
-            <span>最小分段时长</span>
-            <input name="minSegmentMinutes" required type="number" min="1" />
-          </label>
-          <label class="field">
-            <span>外部承诺</span>
-            <input name="externalCommitment" required type="number" min="0" />
-          </label>
-          <label class="checkbox"><input name="fixed" type="checkbox" /> 固定时间</label>
-          <label class="field">
-            <span>固定开始时间</span>
-            <input name="fixedStart" type="time" />
-          </label>
-          <label class="field">
-            <span>固定结束时间</span>
-            <input name="fixedEnd" type="time" />
-          </label>
+          <details id="taskAdvancedOptions" class="advanced-options field-wide">
+            <summary>更多选项 <small class="muted">重要性、紧迫度、场景、精力、前置任务、拆分、固定时间</small></summary>
+            <div class="form-grid">
+              <label class="field">
+                <span>重要性（1–5）</span>
+                <input name="importance" required type="number" min="1" max="5" value="3" />
+              </label>
+              <label class="field">
+                <span>紧迫度（0–6）</span>
+                <input name="urgency" required type="number" min="0" max="6" value="0" />
+              </label>
+              <label class="field">
+                <span>执行场景</span>
+                <select name="executionContext"></select>
+              </label>
+              <label class="field">
+                <span>精力需求</span>
+                <select name="energyDemand"></select>
+              </label>
+              <label class="field">
+                <span>体力需求</span>
+                <select name="physicalDemand"></select>
+              </label>
+              <label class="field">
+                <span>顺序偏好</span>
+                <select name="orderPreference"></select>
+              </label>
+              <div class="field field-wide">
+                <span>前置任务（可多选）</span>
+                <div id="dependencyTaskChoices" class="checkbox-list"></div>
+                <small class="muted">直接勾选一个或多个任务；这些任务的所有分段完成后，才会开始当前任务。</small>
+              </div>
+              <label class="checkbox"><input name="splittable" type="checkbox" /> <span>是否可拆分</span></label>
+              <label class="field">
+                <span>最小分段时长</span>
+                <input name="minSegmentMinutes" required type="number" min="1" />
+              </label>
+              <label class="field">
+                <span>外部承诺</span>
+                <input name="externalCommitment" required type="number" min="0" />
+              </label>
+              <label class="checkbox"><input name="fixed" type="checkbox" /> 固定时间</label>
+              <label class="field">
+                <span>固定开始时间</span>
+                <input name="fixedStart" type="time" />
+              </label>
+              <label class="field">
+                <span>固定结束时间</span>
+                <input name="fixedEnd" type="time" />
+              </label>
+            </div>
+          </details>
           <button id="taskSubmitButton" type="submit">添加任务</button>
           <button id="cancelEditTaskButton" class="hidden" type="button">取消编辑</button>
         </form>
