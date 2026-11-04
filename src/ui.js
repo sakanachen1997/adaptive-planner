@@ -20,6 +20,7 @@ import {
 import { scheduleDay } from './scheduler.js';
 import { calculatePriority } from './priority.js';
 import { applyRanking, moveInOrder, rankedTaskOrder } from './ranking.js';
+import { bridgeRemovedTask, dropNeighbors, reorderDependencies } from './ordering.js';
 import { addMinutes, combineDateAndTime, minutesBetween, normalizeDateTime } from './time.js';
 import {
   MAX_TASK_PRESETS,
@@ -579,6 +580,75 @@ export function completeTaskInList(localTasks, task, { actualStart, actualEnd })
   });
 }
 
+// Default actual times when one segment of a split task is marked done:
+// credit at most that segment, never the whole span up to "now" (which would
+// count the other segments' time as done too).
+export function segmentActualTimes({ segmentStart, segmentEnd, now }) {
+  const start = normalizeDateTime(segmentStart);
+  const end = normalizeDateTime(segmentEnd);
+  const current = normalizeDateTime(now);
+
+  if (current > start) {
+    return { actualStart: start, actualEnd: current < end ? current : end };
+  }
+
+  const minutes = Math.max(1, minutesBetween(start, end) || 1);
+  return { actualStart: addMinutes(current, -minutes), actualEnd: current };
+}
+
+function partialSegmentIdFor(tasks, taskId) {
+  const used = new Set(tasks.map((task) => task.segmentId).filter(Boolean));
+  let index = tasks.filter((task) => task.taskId === taskId && task.partialCompletion).length + 1;
+  while (used.has(`${taskId}_done_${index}`)) {
+    index += 1;
+  }
+  return `${taskId}_done_${index}`;
+}
+
+// Record one finished segment of a split task without completing the task
+// itself. The task keeps its other segments; logicalTasksForSchedule
+// subtracts the recorded minutes from what is still to be scheduled.
+export function completeSegmentInList(localTasks, task, { actualStart, actualEnd, allTasks = localTasks }) {
+  const {
+    calendarEventId,
+    plannedStart,
+    plannedEnd,
+    localOverride,
+    taskLevelOverride,
+    autoFixed,
+    ...configuration
+  } = task;
+  const record = {
+    ...configuration,
+    fixed: false,
+    fixedStart: null,
+    fixedEnd: null,
+    segmentId: partialSegmentIdFor([...allTasks, ...localTasks], task.taskId),
+    partialCompletion: true
+  };
+
+  return completeTaskInList([...localTasks, record], record, { actualStart, actualEnd });
+}
+
+// Decide what clicking 完成 on one timeline segment completes:
+// - 'task': the last remaining segment (or an unsplit task) finishes the task;
+// - 'record': the task has one Calendar record per segment, finish that one;
+// - 'segment': one record covers several segments, record just this piece.
+export function completionScope({ tasks, schedule, taskId, segmentStart, segmentEnd }) {
+  const otherScheduled = (schedule?.segments ?? []).filter((segment) => (
+    segment.taskId === taskId
+      && segment.status === TASK_STATUSES.SCHEDULED
+      && !(sameDateTime(segment.start, segmentStart) && sameDateTime(segment.end, segmentEnd))
+  ));
+
+  if (!segmentEnd || otherScheduled.length === 0) {
+    return 'task';
+  }
+
+  const activeRecords = tasks.filter((task) => task.taskId === taskId && activeEditableTask(task));
+  return activeRecords.length > 1 ? 'record' : 'segment';
+}
+
 export function formInputForTask(task) {
   const taskType = task.taskType ?? '自定义';
   const defaults = TASK_TYPE_DEFAULTS[taskType] ?? TASK_TYPE_DEFAULTS['自定义'];
@@ -679,6 +749,11 @@ function placementFailureLine(item) {
       return `任务「${item.taskName}」的固定时段 ${slot} 与${what}「${item.overlap.name}」（${otherSlot}）重叠。请调整其中一个的时间。`;
     }
     return `任务「${item.taskName}」的固定时段 ${slot} 不在任何可用时间块内。请调整固定时间或增加可用时间。`;
+  }
+
+  if (item.reason === 'order_too_tight') {
+    const successor = item.successorName ? `固定任务「${item.successorName}」` : '后续的固定任务';
+    return `任务「${item.taskName}」需要排在${successor}（${item.orderDeadline.slice(11, 16)} 开始）之前，但在那之前的兼容时间不足最小 ${item.minimumMinutes} 分钟。请调整顺序（前置任务）、固定时间或可用时间。`;
   }
 
   if (item.reason === 'deadline_too_tight') {
@@ -877,7 +952,6 @@ export function buildTimelineItems({
       endMinute: timelineMinutes(segment.end),
       status: segment.status,
       editable: Boolean(task),
-      anchored: Boolean(task?.preferredStart),
       draggable: Boolean(task)
         && segment.status === TASK_STATUSES.SCHEDULED
         && !(task.fixed && !task.autoFixed),
@@ -1090,7 +1164,8 @@ export function selectTaskForCompletion(tasks, {
       segmentId,
       calendarEventId
     },
-    taskCandidatesByTaskId(tasks),
+    // Already-finished pieces of a split task are not completion candidates.
+    taskCandidatesByTaskId(tasks.filter(activeEditableTask)),
     { segmentId, calendarEventId }
   );
 }
@@ -1120,7 +1195,18 @@ export function mergePlanTasks({ calendarTasks = [], localTasks = [] }) {
     calendarTaskIds.add(task.taskId);
   }
 
+  const calendarSegmentIds = new Set(calendarTasks.map((task) => task.segmentId).filter(Boolean));
+
   for (const task of localTasks) {
+    if (task.partialCompletion && !task.calendarEventId) {
+      // A finished piece of a split task stays until its own completed event
+      // has been published and read back.
+      if (!calendarSegmentIds.has(task.segmentId)) {
+        merged.push(task);
+      }
+      continue;
+    }
+
     if (task.taskLevelOverride) {
       if (!calendarTaskIds.has(task.taskId)) {
         merged.push(task);
@@ -1270,8 +1356,9 @@ export function buildSyncOperations({
 
   for (const segment of completedSegments) {
     const task = findTaskForSegment(segment, candidatesByTaskId);
+    const publishPartial = Boolean(task?.partialCompletion && !task.calendarEventId);
 
-    if (!task?.calendarEventId) {
+    if (!task?.calendarEventId && !publishPartial) {
       continue;
     }
 
@@ -1294,6 +1381,12 @@ export function buildSyncOperations({
       TASK_STATUSES.COMPLETED
     );
     const description = buildDescription('由 Adaptive Planner 创建。', metadata);
+
+    if (publishPartial) {
+      // Publish the finished piece so other devices subtract it as well.
+      result.creates.push({ segment: completionSegment, task: completionTask, description });
+      continue;
+    }
 
     result.updates.push({
       segment: completionSegment,
@@ -1376,7 +1469,7 @@ export function syncOperationSummaryLines(operations) {
 
   return [
     ...operations.creates.map((operation) => line(
-      '新建',
+      operation.segment?.status === TASK_STATUSES.COMPLETED ? '记录已完成' : '新建',
       operation.segment?.taskName ?? operation.task?.taskName,
       operationTimeRange(operation.segment?.start, operation.segment?.end)
     )),
@@ -1921,57 +2014,129 @@ const DRAG_THRESHOLD_PX = 4;
 const TOUCH_HOLD_MS = 350;
 let suppressNextTimelineClick = false;
 let lastTimelineBounds = null;
-
-function minuteToTime(minute) {
-  const clamped = Math.max(0, Math.min(23 * 60 + 59, Math.round(minute)));
-  return `${String(Math.floor(clamped / 60)).padStart(2, '0')}:${String(clamped % 60).padStart(2, '0')}`;
-}
+let lastTimelineItems = [];
 
 export function snappedDragMinute(startMinute, deltaPx, minutesPerPx, snap = DRAG_SNAP_MINUTES) {
   return Math.round((startMinute + deltaPx * minutesPerPx) / snap) * snap;
 }
 
-function setTaskAnchor(taskId, preferredStart) {
-  const existing = findLogicalTaskByKey(`task:${taskId}`);
+function taskDependencyMap() {
+  return new Map(logicalTaskDefinitions()
+    .filter((task) => task.status !== TASK_STATUSES.SKIPPED)
+    .map((task) => [task.taskId, [...(task.dependencyTaskIds ?? [])]]));
+}
 
-  if (!existing) {
-    showMessage('找不到要调整的任务。', true);
+// Rewrite the predecessor lists of several logical tasks at once, the same
+// way the edit form saves a task (Calendar-backed tasks get a task-level
+// override so every segment picks the change up).
+function tasksWithDependencyChanges(tasks, changes) {
+  let result = tasks;
+
+  for (const [taskId, dependencyTaskIds] of changes) {
+    const existing = findLogicalTaskByKey(`task:${taskId}`);
+
+    if (!existing) {
+      continue;
+    }
+
+    const updated = createTask({
+      ...formInputForTask(existing),
+      taskId: existing.taskId,
+      status: existing.status,
+      dependencyTaskIds
+    });
+
+    result = upsertLocalTask(result, {
+      ...updated,
+      planDate: existing.planDate ?? state.planDate,
+      taskLevelOverride: Boolean(existing.calendarEventId || existing.segmentId),
+      localOverride: Boolean(existing.calendarEventId || existing.segmentId)
+    });
+  }
+
+  return result;
+}
+
+function taskNameById(taskId) {
+  return logicalTaskDefinitions().find((task) => task.taskId === taskId)?.taskName ?? taskId;
+}
+
+export function reorderDescription({ predecessorName = null, successorName = null }) {
+  if (predecessorName && successorName) {
+    return `排在「${predecessorName}」之后、「${successorName}」之前`;
+  }
+  if (predecessorName) {
+    return `排在「${predecessorName}」之后`;
+  }
+  if (successorName) {
+    return `排在「${successorName}」之前`;
+  }
+  return '';
+}
+
+function neighborNames(neighbors) {
+  return {
+    predecessorName: neighbors.predecessorId ? taskNameById(neighbors.predecessorId) : null,
+    successorName: neighbors.successorId ? taskNameById(neighbors.successorId) : null
+  };
+}
+
+function applyTimelineReorder(taskId, neighbors) {
+  const name = taskNameById(taskId);
+  const { changes, error } = reorderDependencies(taskDependencyMap(), { taskId, ...neighbors });
+
+  if (error === 'no_neighbors') {
+    showMessage(`时间轴上没有其他可排序的任务，「${name}」的顺序没有变化。`);
+    renderSchedule();
+    return;
+  }
+
+  if (error) {
+    showMessage(`无法把「${name}」${reorderDescription(neighborNames(neighbors))}：这会和现有的前置任务形成环。`, true);
+    renderSchedule();
+    return;
+  }
+
+  if (changes.size === 0) {
+    showMessage(`「${name}」已经${reorderDescription(neighborNames(neighbors))}。`);
+    renderSchedule();
     return;
   }
 
   const previousTasks = state.tasks;
-  const updated = createTask({
-    ...formInputForTask(existing),
-    taskId: existing.taskId,
-    status: existing.status,
-    preferredStart
-  });
+  const previousStatus = displayedSchedule()?.status;
+  const description = reorderDescription(neighborNames(neighbors));
 
-  setTasks(upsertLocalTask(state.tasks, {
-    ...updated,
-    planDate: existing.planDate ?? state.planDate,
-    taskLevelOverride: Boolean(existing.calendarEventId || existing.segmentId),
-    localOverride: Boolean(existing.calendarEventId || existing.segmentId)
-  }));
+  setTasks(tasksWithDependencyChanges(state.tasks, changes));
   recalculate();
 
-  if (preferredStart) {
-    const placed = displayedSchedule()?.segments?.find((segment) => (
-      segment.taskId === taskId && segment.status === TASK_STATUSES.SCHEDULED
-    ));
-    const placedAt = placed?.start?.slice(11, 16);
-    showMessage(placedAt && placedAt !== preferredStart
-      ? `「${existing.taskName}」锚定在 ${preferredStart}，但该时段放不下，已放在最近的 ${placedAt}。`
-      : `「${existing.taskName}」已锚定在 ${preferredStart}，重新调度时会尽量保持。`);
-    showUndoToast(`已移动「${existing.taskName}」`, previousTasks, '已撤销移动。');
-  } else {
-    showMessage(`已取消「${existing.taskName}」的锚定，由系统自动安排。`);
-    showUndoToast(`已取消锚定「${existing.taskName}」`, previousTasks, '已恢复锚定。');
+  const schedule = displayedSchedule();
+
+  if (schedule?.status === 'conflict' && previousStatus !== 'conflict') {
+    const reason = conflictSummaryLines(schedule.conflict)[0] ?? '';
+    setTasks(previousTasks);
+    recalculate();
+    showMessage(`无法把「${name}」${description}，已保持原来的顺序。${reason}`, true);
+    return;
   }
+
+  showMessage(`已把「${name}」${description}。顺序已写入前置任务，可在编辑任务时查看或修改。`);
+  showUndoToast(`已调整「${name}」的顺序`, previousTasks, '已撤销顺序调整。');
 }
 
-// Drag a task block vertically to anchor it at a new start time. Mouse/pen
-// drag immediately; touch needs a short hold so normal scrolling still works.
+function timelineOrderSegments() {
+  return lastTimelineItems
+    .filter((item) => item.kind === 'task' && item.status === TASK_STATUSES.SCHEDULED)
+    .map((item) => ({
+      taskId: item.segment.taskId,
+      startMinute: item.startMinute,
+      endMinute: item.endMinute
+    }));
+}
+
+// Drag a task block vertically to change its order relative to the other
+// tasks. Mouse/pen drag immediately; touch needs a short hold so normal
+// scrolling still works. The drop position becomes predecessor relations.
 function handleTimelinePointerDown(event) {
   const node = event.target.closest?.('[data-drag-task-id]');
   const view = node?.closest('.timeline-view');
@@ -1986,8 +2151,11 @@ function handleTimelinePointerDown(event) {
     return;
   }
 
+  const taskId = node.dataset.dragTaskId;
   const minutesPerPx = bounds.totalMinutes / view.getBoundingClientRect().height;
   const startMinute = Number(node.dataset.startMinute);
+  const durationMinutes = Math.max(1, Number(node.dataset.endMinute) - startMinute);
+  const orderSegments = timelineOrderSegments();
   const startY = event.clientY;
   const originalTop = node.style.top;
   const timeLabel = node.querySelector('span');
@@ -1997,6 +2165,12 @@ function handleTimelinePointerDown(event) {
   let dragging = false;
   let holdTimer = null;
   let newMinute = startMinute;
+  const neighborsAt = (minute) => dropNeighbors(orderSegments, {
+    taskId,
+    dropStartMinute: minute,
+    durationMinutes,
+    originalStartMinute: startMinute
+  });
 
   const preventScroll = (touchEvent) => {
     if (armed) {
@@ -2035,7 +2209,7 @@ function handleTimelinePointerDown(event) {
     );
     node.style.top = `${((newMinute - bounds.startMinute) / bounds.totalMinutes) * 100}%`;
     if (timeLabel) {
-      timeLabel.textContent = `移到 ${minuteToTime(newMinute)}`;
+      timeLabel.textContent = reorderDescription(neighborNames(neighborsAt(newMinute))) || '松手调整顺序';
     }
   };
 
@@ -2065,7 +2239,7 @@ function handleTimelinePointerDown(event) {
     }
 
     state.selectedTimelineItemId = null;
-    setTaskAnchor(node.dataset.dragTaskId, minuteToTime(newMinute));
+    applyTimelineReorder(taskId, neighborsAt(newMinute));
   };
 
   if (isTouch) {
@@ -2193,21 +2367,17 @@ function renderTimelineItem(parent, item, bounds) {
     node.classList.add('timeline-compact');
   }
 
-  if (item.anchored) {
-    node.classList.add('timeline-anchored');
-  }
-
   if (item.draggable) {
     node.dataset.dragTaskId = item.segment.taskId;
     node.dataset.startMinute = String(item.startMinute);
+    node.dataset.endMinute = String(item.endMinute);
   }
 
   node.style.top = `${top}%`;
   node.style.height = `${height}%`;
   node.dataset.timelineItemId = item.id;
   node.title = `${item.title}\n${timeRange}`
-    + (item.anchored ? `\n锚定 ${item.task.preferredStart}` : '')
-    + (item.draggable ? '\n拖动可调整时间（触屏长按后拖动）' : '');
+    + (item.draggable ? '\n拖动可调整与其他任务的先后顺序（触屏长按后拖动）' : '');
   appendText(node, item.title, 'strong');
   appendText(node, timeRange, 'span');
   parent.append(node);
@@ -2375,7 +2545,7 @@ function renderCompletedTasks(root, tasks) {
     const record = document.createElement('div');
     const row = document.createElement('div');
     row.className = 'schedule-actions';
-    appendText(row, `${task.taskName}：${completedTaskTimeLabel(task)}`, 'span');
+    appendText(row, `${task.taskName}${task.partialCompletion ? '（部分）' : ''}：${completedTaskTimeLabel(task)}`, 'span');
     appendUncompleteButton(row, task);
     record.className = 'completed-record';
     record.append(row);
@@ -2418,25 +2588,12 @@ function renderTimelineTaskDetail(parent, item) {
     return;
   }
 
-  if (task.preferredStart && segment.status === TASK_STATUSES.SCHEDULED) {
-    const anchorRow = document.createElement('div');
-    anchorRow.className = 'anchor-info';
-    const placedAt = item.start.slice(11, 16);
-    appendText(
-      anchorRow,
-      placedAt === task.preferredStart || item.segmentNumber > 1
-        ? `已锚定在 ${task.preferredStart}，重新调度时会尽量保持。`
-        : `锚定在 ${task.preferredStart}，但该时段放不下（被占用、不在可用时间、晚于截止，或会让其他任务放不下），已放在最近的位置。`,
-      'span'
-    );
-    const clearAnchor = document.createElement('button');
-    clearAnchor.type = 'button';
-    clearAnchor.textContent = '取消锚定';
-    clearAnchor.dataset.clearAnchorTaskId = task.taskId;
-    anchorRow.append(clearAnchor);
-    parent.append(anchorRow);
-  } else if (item.draggable) {
-    appendText(parent, '提示：在时间轴上拖动任务块可以把它锚定到新的时间（触屏长按后拖动）。', 'p').className = 'muted';
+  const predecessorNames = (task.dependencyTaskIds ?? []).map(taskNameById);
+  if (predecessorNames.length > 0) {
+    appendText(parent, `前置任务：${predecessorNames.map((name) => `「${name}」`).join('、')}`, 'p').className = 'order-info';
+  }
+  if (item.draggable) {
+    appendText(parent, '提示：在时间轴上拖动任务块，可以把它排到其他任务之前或之后（写入前置任务；触屏长按后拖动）。', 'p').className = 'muted';
   }
 
   const actions = document.createElement('div');
@@ -2512,6 +2669,7 @@ function renderSchedule() {
     }));
   const bounds = timelineBounds(items, timelineNow, availabilityRanges);
   lastTimelineBounds = bounds;
+  lastTimelineItems = items;
   const layout = document.createElement('div');
   const timelineView = document.createElement('div');
   const timelineDetail = document.createElement('div');
@@ -3020,8 +3178,7 @@ function editedTaskFromForm(form) {
   const updated = createTask({
     ...taskInputFromForm(form),
     taskId: existing.taskId,
-    status: existing.status,
-    preferredStart: existing.preferredStart ?? null
+    status: existing.status
   });
 
   return {
@@ -3099,6 +3256,29 @@ function completeTask(taskId, segmentStart, {
   if (!existing) {
     showMessage('找不到要完成的任务。', true);
     return false;
+  }
+
+  const scope = completionScope({
+    tasks: currentTasks,
+    schedule: displayedSchedule(),
+    taskId,
+    segmentStart,
+    segmentEnd
+  });
+
+  if (scope !== 'task') {
+    const times = segmentActualTimes({ segmentStart, segmentEnd, now: localNowString() });
+    const record = {
+      ...existing,
+      calendarEventId: existing.calendarEventId ?? calendarEventId ?? null,
+      segmentId: existing.segmentId ?? segmentId ?? null
+    };
+    setTasks(scope === 'record'
+      ? completeTaskInList(state.tasks, record, times)
+      : completeSegmentInList(state.tasks, record, { ...times, allTasks: currentTasks }));
+    recalculate();
+    showMessage(`已完成「${existing.taskName}」的这一段（${times.actualStart.slice(11, 16)}–${times.actualEnd.slice(11, 16)}），其余部分仍在计划中。可在“已完成”列表修正实际时间。`);
+    return true;
   }
 
   return markTaskCompleted({
@@ -3247,7 +3427,18 @@ function removeTask(key) {
   }
 
   const previousTasks = state.tasks;
-  setTasks(removeTaskForReschedule(state.tasks, task));
+  const dependencies = taskDependencyMap();
+  let remaining = removeTaskForReschedule(state.tasks, task);
+  state.tasks = remaining;
+  const stillActive = logicalTaskDefinitions().some((candidate) => (
+    candidate.taskId === task.taskId && activeEditableTask(candidate)
+  ));
+  if (!stillActive) {
+    // Tasks that waited for the removed one inherit its predecessors, so the
+    // chain keeps its order instead of failing on a missing reference.
+    remaining = tasksWithDependencyChanges(remaining, bridgeRemovedTask(dependencies, task.taskId));
+  }
+  setTasks(remaining);
 
   if (state.editingTaskKey === key) {
     resetTaskForm();
@@ -3265,6 +3456,13 @@ function uncompleteTask(key) {
 
   if (!task) {
     showMessage('找不到要恢复的任务。', true);
+    return;
+  }
+
+  if (task.partialCompletion && !task.calendarEventId) {
+    setTasks(state.tasks.filter((candidate) => !sameEditableTask(candidate, task)));
+    recalculate();
+    showMessage('已撤回这一段的完成记录，这部分时间重新排入计划。');
     return;
   }
 
@@ -3307,13 +3505,6 @@ function saveActualTimes(key, editor) {
 function handleScheduleClick(event) {
   if (suppressNextTimelineClick) {
     suppressNextTimelineClick = false;
-    return;
-  }
-
-  const clearAnchorTaskId = event.target.dataset.clearAnchorTaskId;
-
-  if (clearAnchorTaskId) {
-    setTaskAnchor(clearAnchorTaskId, null);
     return;
   }
 

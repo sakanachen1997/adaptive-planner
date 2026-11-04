@@ -241,9 +241,6 @@ export function createTask(input) {
     actualStart: input.actualStart ?? null,
     actualEnd: input.actualEnd ?? null,
     weekPlanId: input.weekPlanId ?? null,
-    preferredStart: /^\d{2}:\d{2}$/.test(String(input.preferredStart ?? ''))
-      ? input.preferredStart
-      : null,
     dependencyTaskIds: dependencyTaskIds(input.dependencyTaskIds, taskId)
   };
 }

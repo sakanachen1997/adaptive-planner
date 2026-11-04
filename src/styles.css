@@ -508,37 +508,12 @@ input[type="checkbox"] {
   opacity: 0.92;
 }
 
-.timeline-anchored {
-  border-left-style: dashed;
-}
-
-.timeline-anchored strong::before {
-  content: "锚定";
-  margin-right: 6px;
-  padding: 0 5px;
-  border-radius: 4px;
-  background: var(--accent);
-  color: #fff;
-  font-size: 0.72rem;
-  font-weight: 500;
-  vertical-align: 1px;
-}
-
-.anchor-info {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 8px;
+.order-info {
   margin: 10px 0;
   padding: 8px 10px;
   border-radius: 8px;
   background: var(--surface);
   font-size: 0.9rem;
-}
-
-.anchor-info button {
-  min-height: 0;
-  padding: 3px 10px;
 }
 
 .timeline-block.selected {

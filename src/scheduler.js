@@ -146,21 +146,66 @@ function taskWithEffectiveWork(task, planDate, now) {
   return {
     ...task,
     effectiveMinimumMinutes,
-    effectiveDesiredMinutes,
-    anchorAt: anchorDateTime(task, planDate)
+    effectiveDesiredMinutes
   };
 }
 
-// Soft anchor from dragging a task on the timeline: "HH:MM" on the plan date.
-// User-fixed tasks keep their fixed time and ignore it.
-function anchorDateTime(task, planDate) {
-  if (!task.preferredStart || (task.fixed && !task.autoFixed)) {
-    return null;
+// The latest moment a task may still occupy: its own deadline, tightened by
+// `orderDeadline` when a user-fixed task (directly or through a chain) must
+// come after it.
+function effectiveDeadline(task) {
+  const deadline = validDateTime(task.deadline);
+  const orderDeadline = task.orderDeadline ?? null;
+
+  if (deadline && orderDeadline) {
+    return deadline < orderDeadline ? deadline : orderDeadline;
   }
 
-  return /^\d{2}:\d{2}$/.test(String(task.preferredStart))
-    ? `${planDate}T${task.preferredStart}:00`
-    : null;
+  return deadline ?? orderDeadline;
+}
+
+// Annotate each task with ordering facts the placement needs:
+// - hasSuccessors: some other active task lists it as a predecessor, so it is
+//   worth packing early (and splitting) to leave room for what follows;
+// - orderDeadline: the start of the earliest user-fixed task that must follow
+//   it. A fixed task cannot move, so its predecessors have to finish first.
+function withOrderConstraints(tasks, planDate, now) {
+  const byId = new Map(tasks.map((task) => [task.taskId, task]));
+  const successorIds = new Map(tasks.map((task) => [task.taskId, []]));
+
+  for (const task of tasks) {
+    for (const dependencyId of dependencyIds(task)) {
+      successorIds.get(dependencyId)?.push(task.taskId);
+    }
+  }
+
+  const fixedStart = new Map(tasks
+    .filter((task) => isUserFixed(task))
+    .map((task) => [task.taskId, fixedFutureInterval(task, planDate, now)?.start ?? null])
+    .filter(([, start]) => start));
+  const limits = new Map();
+  let changed = true;
+
+  while (changed) {
+    changed = false;
+    for (const task of tasks) {
+      for (const successorId of successorIds.get(task.taskId)) {
+        const candidate = fixedStart.get(successorId) ?? limits.get(successorId) ?? null;
+        const current = limits.get(task.taskId) ?? null;
+
+        if (candidate && (!current || candidate < current)) {
+          limits.set(task.taskId, candidate);
+          changed = true;
+        }
+      }
+    }
+  }
+
+  return tasks.map((task) => ({
+    ...byId.get(task.taskId),
+    hasSuccessors: successorIds.get(task.taskId).length > 0,
+    orderDeadline: isUserFixed(task) ? null : limits.get(task.taskId) ?? null
+  }));
 }
 
 function allocateDurations(tasks, capacityMinutes, now) {
@@ -286,7 +331,7 @@ function segmentForTask(task, start, minutes) {
 
 function usableMinutes(task, block) {
   const capacity = intervalMinutes(block.start, block.end);
-  const deadline = validDateTime(task.deadline);
+  const deadline = effectiveDeadline(task);
 
   if (!deadline) {
     return capacity;
@@ -306,58 +351,72 @@ function rankedCompatibleBlocks(task, blocks) {
     ));
 }
 
-// Place the whole duration as close to the anchor as possible: within each
-// compatible block the start is clamped to [block.start, latest start that
-// still fits before the block end and the deadline]; the nearest wins.
-function anchoredPlacement(task, minutes, blocks) {
-  if (!task.anchorAt || minutes <= 0) {
-    return null;
+// Earliest-first placement for tasks that others wait on. Compatible blocks
+// are filled in clock order so the task ends as early as possible; a
+// splittable task is split across as many blocks as needed (each piece at
+// least minSegmentMinutes, never leaving a tail shorter than that), which
+// keeps room after it for its successors.
+function placeTaskEarliest(task, minutes, blocks) {
+  const segments = [];
+  let remaining = minutes;
+  let remainingBlocks = blocks.map((block) => ({ ...block }));
+  const minimumSegmentMinutes = task.splittable
+    ? Math.min(task.minSegmentMinutes, minutes)
+    : task.effectiveMinimumMinutes;
+  const chronological = () => remainingBlocks
+    .filter((block) => contextCompatible(task, block))
+    .sort((left, right) => left.start.localeCompare(right.start) || left.end.localeCompare(right.end));
+
+  if (!task.splittable) {
+    const compatible = chronological();
+    const whole = compatible.find((block) => usableMinutes(task, block) >= remaining);
+    const largest = whole ?? compatible
+      .filter((block) => usableMinutes(task, block) >= task.effectiveMinimumMinutes)
+      .sort((left, right) => usableMinutes(task, right) - usableMinutes(task, left))[0];
+
+    if (largest && remaining > 0) {
+      const segment = segmentForTask(task, largest.start, Math.min(remaining, usableMinutes(task, largest)));
+      segments.push(segment);
+      remaining -= segment.allocatedMinutes;
+      remainingBlocks = subtractIntervals(remainingBlocks, [segment]);
+    }
+
+    return { segments, remaining, blocks: remainingBlocks };
   }
 
-  const anchorMs = toMillis(task.anchorAt);
-  const deadline = validDateTime(task.deadline);
-  let best = null;
+  for (const block of chronological()) {
+    if (remaining <= 0 || remaining < minimumSegmentMinutes) {
+      break;
+    }
 
-  for (const block of blocks) {
-    if (!contextCompatible(task, block)) {
+    const capacity = usableMinutes(task, block);
+
+    if (capacity < minimumSegmentMinutes) {
       continue;
     }
 
-    const limit = deadline && deadline < block.end ? deadline : block.end;
-    const latestStartMs = toMillis(limit) - minutes * 60000;
-    const blockStartMs = toMillis(block.start);
+    let used = Math.min(remaining, capacity);
+    const tail = remaining - used;
 
-    if (latestStartMs < blockStartMs) {
-      continue;
+    if (tail > 0 && tail < minimumSegmentMinutes) {
+      used = remaining - minimumSegmentMinutes;
+      if (used < minimumSegmentMinutes) {
+        continue;
+      }
     }
 
-    const startMs = Math.min(Math.max(anchorMs, blockStartMs), latestStartMs);
-    const distance = Math.abs(startMs - anchorMs);
-
-    if (!best || distance < best.distance || (distance === best.distance && startMs < best.startMs)) {
-      best = { startMs, distance, block };
-    }
+    const segment = segmentForTask(task, block.start, used);
+    segments.push(segment);
+    remaining -= used;
+    remainingBlocks = subtractIntervals(remainingBlocks, [segment]);
   }
 
-  if (!best) {
-    return null;
-  }
-
-  const start = best.startMs === toMillis(best.block.start)
-    ? best.block.start
-    : addMinutes(best.block.start, Math.round((best.startMs - toMillis(best.block.start)) / 60000));
-  return segmentForTask(task, start, minutes);
+  return { segments, remaining, blocks: remainingBlocks };
 }
 
-function placeTask(task, minutes, blocks) {
-  const anchored = anchoredPlacement(task, minutes, blocks);
-
-  if (anchored) {
-    return {
-      segments: [anchored],
-      remaining: 0,
-      blocks: subtractIntervals(blocks.map((block) => ({ ...block })), [anchored])
-    };
+function placeTask(task, minutes, blocks, { earliest = false } = {}) {
+  if (earliest) {
+    return placeTaskEarliest(task, minutes, blocks);
   }
 
   const segments = [];
@@ -629,7 +688,7 @@ function orderByDependencies(tasks, comparator) {
 }
 
 function inheritedDeadlines(tasks) {
-  const deadlines = new Map(tasks.map((task) => [task.taskId, validDateTime(task.deadline)]));
+  const deadlines = new Map(tasks.map((task) => [task.taskId, effectiveDeadline(task)]));
   let changed = true;
 
   while (changed) {
@@ -682,53 +741,19 @@ function recordLatestEnd(dependencyEnds, taskId, segments) {
   }
 }
 
-// Anchored tasks softly reserve [anchor, anchor + allocation] so tasks placed
-// earlier in the order steer around them. A reservation is only honored when
-// it costs the other task no placed minutes; otherwise the full blocks win.
-function anchorReservations(tasks, allocations) {
-  return tasks
-    .filter((task) => task.anchorAt)
-    .map((task) => ({
-      taskId: task.taskId,
-      start: task.anchorAt,
-      end: addMinutes(task.anchorAt, allocations.get(task.taskId) ?? task.effectiveMinimumMinutes)
-    }));
-}
-
-function placedMinutes(result) {
-  return result.segments.reduce((sum, segment) => sum + segment.allocatedMinutes, 0);
-}
-
-function placeAroundReservations(task, minutes, blocks, reservations) {
-  const others = reservations.filter((reservation) => reservation.taskId !== task.taskId);
-  const full = placeTask(task, minutes, blocks);
-
-  if (others.length === 0) {
-    return full;
-  }
-
-  const avoiding = placeTask(task, minutes, subtractIntervals(blocks, others));
-  return placedMinutes(avoiding) >= placedMinutes(full) ? avoiding : full;
-}
-
-// Anchors are soft: if honoring them makes some task fail (e.g. the anchor
-// splits a block into fragments too small for others), place again without
-// anchors before reporting a failure.
+// Try the regular (energy-scored) placement first. If some task cannot reach
+// its minimum, retry with order-aware placement: tasks that others depend on
+// are packed earliest-first and split when splittable, so a predecessor
+// sitting in a late high-energy block no longer starves its successors.
 function attemptPlacement(args) {
-  const anchored = attemptPlacementOnce(args);
+  const regular = attemptPlacementOnce(args);
 
-  if (!anchored.failure || !args.flexibleTasks.some((task) => task.anchorAt)) {
-    return anchored;
+  if (!regular.failure || !args.flexibleTasks.some((task) => task.hasSuccessors)) {
+    return regular;
   }
 
-  const relaxed = attemptPlacementOnce({
-    ...args,
-    flexibleTasks: args.flexibleTasks.map((task) => (
-      task.anchorAt ? { ...task, anchorAt: null } : task
-    ))
-  });
-
-  return relaxed.failure ? anchored : relaxed;
+  const orderAware = attemptPlacementOnce({ ...args, orderAware: true });
+  return orderAware.failure ? regular : orderAware;
 }
 
 function attemptPlacementOnce({
@@ -738,7 +763,8 @@ function attemptPlacementOnce({
   available,
   planDate,
   now,
-  initialDependencyEnds = new Map()
+  initialDependencyEnds = new Map(),
+  orderAware = false
 }) {
   let blocks = available.map((block) => ({ ...block }));
   const scheduled = [];
@@ -793,8 +819,6 @@ function attemptPlacementOnce({
     }
   }
 
-  const reservations = anchorReservations(flexibleTasks, allocations);
-
   for (const task of flexibleTasks) {
     const allocatedMinutes = allocations.get(task.taskId) ?? task.effectiveMinimumMinutes;
     const eligibleBlocks = blocksAfter(blocks, latestDependencyEnd(task, dependencyEnds));
@@ -803,7 +827,9 @@ function attemptPlacementOnce({
       task,
       allocatedMinutes,
       candidateBlocks,
-      placeAroundReservations(task, allocatedMinutes, eligibleBlocks, reservations)
+      placeTask(task, allocatedMinutes, eligibleBlocks, {
+        earliest: orderAware && Boolean(task.hasSuccessors)
+      })
     );
 
     if (failure) {
@@ -869,9 +895,20 @@ function classifyPlacementFailure(task, { available, protectedBlocks, fixedTasks
   }
 
   const deadline = validDateTime(task.deadline);
-  if (deadline) {
-    const usable = contextBlocks.reduce((sum, block) => sum + usableMinutes(task, block), 0);
+  const limit = effectiveDeadline(task);
+  if (limit) {
+    const usable = contextBlocks.reduce((sum, block) => sum + Math.max(0, usableMinutes(task, block)), 0);
     if (usable < task.effectiveMinimumMinutes) {
+      if (task.orderDeadline && limit === task.orderDeadline && limit !== deadline) {
+        const successor = fixedTasks.find((other) => (
+          fixedFutureInterval(other, planDate, now)?.start === task.orderDeadline
+        ));
+        return {
+          reason: 'order_too_tight',
+          orderDeadline: task.orderDeadline,
+          successorName: successor?.taskName ?? null
+        };
+      }
       return { reason: 'deadline_too_tight', deadline };
     }
   }
@@ -925,7 +962,56 @@ function orderingPriority(task, now, groupRep) {
   return calculatePriority(task, now);
 }
 
-function placementComparator(now, groupRep = new Map(), deadlines = new Map()) {
+// A predecessor enables everything that waits for it, so for placement order
+// it is at least as important as its most important (transitive) successor,
+// and among equals the one more tasks wait on goes first. This keeps a task
+// dragged in front of another one actually near the front.
+function orderInfluence(tasks, now) {
+  const priorities = new Map(tasks.map((task) => [task.taskId, calculatePriority(task, now)]));
+  const dependentsOf = new Map(tasks.map((task) => [task.taskId, []]));
+
+  for (const task of tasks) {
+    for (const dependencyId of dependencyIds(task)) {
+      dependentsOf.get(dependencyId)?.push(task.taskId);
+    }
+  }
+
+  const inherited = new Map();
+  const descendants = new Map();
+
+  for (const task of tasks) {
+    const seen = new Set();
+    const stack = [...dependentsOf.get(task.taskId)];
+    let best = priorities.get(task.taskId);
+
+    while (stack.length > 0) {
+      const id = stack.pop();
+      if (seen.has(id)) {
+        continue;
+      }
+      seen.add(id);
+      best = Math.max(best, priorities.get(id) ?? best);
+      stack.push(...(dependentsOf.get(id) ?? []));
+    }
+
+    inherited.set(task.taskId, best);
+    descendants.set(task.taskId, seen.size);
+  }
+
+  return { inherited, descendants };
+}
+
+function placementComparator(
+  now,
+  groupRep = new Map(),
+  deadlines = new Map(),
+  { inherited = new Map(), descendants = new Map() } = {}
+) {
+  const keyPriority = (task) => Math.max(
+    orderingPriority(task, now, groupRep),
+    inherited.get(task.taskId) ?? -Infinity
+  );
+
   return (left, right) => {
     const leftDeadline = deadlines.get(left.taskId) ?? validDateTime(left.deadline);
     const rightDeadline = deadlines.get(right.taskId) ?? validDateTime(right.deadline);
@@ -945,9 +1031,14 @@ function placementComparator(now, groupRep = new Map(), deadlines = new Map()) {
       return leftRestricted ? -1 : 1;
     }
 
-    const priorityDelta = orderingPriority(right, now, groupRep) - orderingPriority(left, now, groupRep);
+    const priorityDelta = keyPriority(right) - keyPriority(left);
     if (priorityDelta !== 0) {
       return priorityDelta;
+    }
+
+    const descendantDelta = (descendants.get(right.taskId) ?? 0) - (descendants.get(left.taskId) ?? 0);
+    if (descendantDelta !== 0) {
+      return descendantDelta;
     }
 
     // Same ordering priority (e.g. same batch group): keep the group contiguous,
@@ -1123,6 +1214,7 @@ function reclaimWastedCapacity({
   planDate,
   now,
   dependencyEnds,
+  capacity = totalMinutes(blocks),
   scheduled,
   unscheduled
 }) {
@@ -1130,7 +1222,7 @@ function reclaimWastedCapacity({
   let bestUnscheduled = unscheduled;
   let bestActual = placedMinutesByTask(bestScheduled);
   let bestTotal = totalPlacedMinutes(bestActual);
-  const windowCapacity = totalMinutes(blocks);
+  const windowCapacity = capacity;
   const byPriority = priorityDescending(now);
 
   while (true) {
@@ -1196,12 +1288,19 @@ function reclaimWastedCapacity({
   return { scheduled: bestScheduled, unscheduled: bestUnscheduled };
 }
 
-function scheduleWindow({ tasks, blocks, planDate, now, dependencyEnds = new Map(), reclaim = true }) {
-  const capacity = totalMinutes(blocks);
+function scheduleWindow({
+  tasks,
+  blocks,
+  planDate,
+  now,
+  dependencyEnds = new Map(),
+  reclaim = true,
+  capacity = totalMinutes(blocks)
+}) {
   const groupRep = batchRepresentativePriorities(tasks, now);
   const ordered = orderByDependencies(
     tasks,
-    placementComparator(now, groupRep, inheritedDeadlines(tasks))
+    placementComparator(now, groupRep, inheritedDeadlines(tasks), orderInfluence(tasks, now))
   );
   const fixedTasks = ordered.filter((task) => task.fixed && task.fixedStart && task.fixedEnd);
   const flexibleTasks = ordered.filter((task) => !fixedTasks.includes(task));
@@ -1260,6 +1359,7 @@ function scheduleWindow({ tasks, blocks, planDate, now, dependencyEnds = new Map
         planDate,
         now,
         dependencyEnds,
+        capacity,
         scheduled: attempt.scheduled,
         unscheduled: attempt.unscheduled
       })
@@ -1515,9 +1615,13 @@ export function scheduleDay({
   const completed = completedSegments(tasks);
   const blockedIntervals = [...protectedBlocks, ...completed];
   const schedulingNow = scheduleStart ?? now;
-  const active = activeTasks(tasks)
-    .map((task) => unlockAutoFixedDeadlineViolation(task, planDate))
-    .map((task) => taskWithEffectiveWork(task, planDate, schedulingNow));
+  const active = withOrderConstraints(
+    activeTasks(tasks)
+      .map((task) => unlockAutoFixedDeadlineViolation(task, planDate))
+      .map((task) => taskWithEffectiveWork(task, planDate, schedulingNow)),
+    planDate,
+    schedulingNow
+  );
   const { blocks: available, availableMinutes } = buildDayAvailability({
     planDate,
     scheduleStart: schedulingNow,
@@ -1621,9 +1725,32 @@ export function scheduleDay({
     },
     floating
   );
+  let outcome = outcomeFromWindows(best, tasks, completed);
 
-  if (best.conflicts.length > 0) {
-    const failure = best.conflicts[0];
+  // Context windows are scheduled one after another and a flexible task lives
+  // in a single window. That cannot honor an order chain that goes back and
+  // forth between contexts (work A -> home B -> work C), nor split a task
+  // across windows when no single window has room. When the window plan
+  // fails, schedule every task over the shared day in dependency order
+  // instead; contexts then only restrict which blocks a task may use.
+  if (outcome.failure || outcome.orderIssues.length > 0) {
+    const global = scheduleWindow({
+      tasks: schedulableTasks,
+      blocks: available,
+      planDate,
+      now: schedulingNow,
+      dependencyEnds: completedDependencyEnds(tasks),
+      capacity: availableMinutes
+    });
+    const globalOutcome = outcomeFromParts(global, tasks, completed);
+
+    if (!globalOutcome.failure && globalOutcome.orderIssues.length === 0) {
+      outcome = globalOutcome;
+    }
+  }
+
+  if (outcome.failure) {
+    const failure = outcome.failure;
     const diagnosis = classifyPlacementFailure(failure.task, {
       available,
       protectedBlocks,
@@ -1646,32 +1773,58 @@ export function scheduleDay({
     );
   }
 
-  const windowResults = [...best.perWindow.values()];
-  const scheduled = windowResults.flatMap((w) => w.scheduled);
-  const unscheduled = windowResults.flatMap((w) => w.unscheduled);
-  const mergedAllocations = new Map();
-  for (const w of windowResults) {
-    for (const [taskId, minutes] of w.allocations) {
-      mergedAllocations.set(taskId, minutes);
-    }
-  }
-  const durationPlan = durationPlanSummary(schedulableTasks, mergedAllocations, availableMinutes);
-  const allSegments = sortSegments([...completed, ...scheduled]);
-  const orderIssues = dependencyOrderIssues(tasks, allSegments);
-
-  if (orderIssues.length > 0) {
+  if (outcome.orderIssues.length > 0) {
     return conflictResult(planDate, completed, availableMinutes, requiredMinimumMinutes, {
       kind: 'dependency_order_violation',
-      dependencyIssues: orderIssues,
+      dependencyIssues: outcome.orderIssues,
       actions: ['调整固定时间、任务场景或可用时间，使前置任务能先完成']
     });
   }
 
+  const durationPlan = durationPlanSummary(schedulableTasks, outcome.allocations, availableMinutes);
+
   return {
-    status: unscheduled.length > 0 ? 'partial' : 'ok',
+    status: outcome.unscheduled.length > 0 ? 'partial' : 'ok',
     planDate,
-    segments: allSegments,
-    unscheduled,
-    durationPlan: withPlacedActualDurations(durationPlan, scheduled)
+    segments: outcome.segments,
+    unscheduled: outcome.unscheduled,
+    durationPlan: withPlacedActualDurations(durationPlan, outcome.scheduled)
   };
+}
+
+function outcomeFromParts({ failure, scheduled, unscheduled, allocations }, tasks, completed) {
+  if (failure) {
+    return { failure, orderIssues: [] };
+  }
+
+  const segments = sortSegments([...completed, ...scheduled]);
+  return {
+    failure: null,
+    scheduled,
+    unscheduled,
+    allocations,
+    segments,
+    orderIssues: dependencyOrderIssues(tasks, segments)
+  };
+}
+
+function outcomeFromWindows(best, tasks, completed) {
+  if (best.conflicts.length > 0) {
+    return { failure: best.conflicts[0], orderIssues: [] };
+  }
+
+  const windowResults = [...best.perWindow.values()];
+  const allocations = new Map();
+  for (const w of windowResults) {
+    for (const [taskId, minutes] of w.allocations) {
+      allocations.set(taskId, minutes);
+    }
+  }
+
+  return outcomeFromParts({
+    failure: null,
+    scheduled: windowResults.flatMap((w) => w.scheduled),
+    unscheduled: windowResults.flatMap((w) => w.unscheduled),
+    allocations
+  }, tasks, completed);
 }
